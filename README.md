@@ -45,10 +45,29 @@ Hand tracking runs **on your device** (MediaPipe). Video never leaves your compu
 
 **Realistic rendering**
 
+- **Contact shadows.** Ambient occlusion is computed for every particle (in a background worker), so creases, joints and touching parts get darker, just like real objects.
+- **Smooth surfaces.** In Realistic view each particle is drawn as a tiny disc lying on the surface, and colours are tone-mapped like a camera would.
 - **Three views (key S):** *Realistic* (shaded solid surfaces on a studio backdrop with a floor shadow), *Glow* (particles of light) and *X-ray* (edges only, so you can see inside).
 - **Real materials.** Metal reflects its surroundings, organs have soft, warm, skin-like lighting, glass is see-through, and rubber and plastic have their own finishes. Surfaces have natural texture: brain folds, rock, bumpy organs.
 - **Things flow.** Blood pulses through arteries, air moves down the windpipe, current runs through coils, magma rises up the volcano, and food moves through the gut.
 - **Cut-away by default** for the eye and plant cell, like a textbook diagram.
+
+**Hands-on: take it apart and put it back**
+
+- **Grab and move any part.** Pinch and hold 🤏 on a part to pick it up, then move your hand to carry it. Move your hand toward or away from the camera to bring the part closer or push it back. With a mouse: press and hold on a part, or Shift-drag, or right-drag, and scroll to change depth. On touch screens: long-press, then drag.
+- **Magnetic snap.** Drop a part near where it belongs and it clicks back into place.
+- **Reassemble everything** with 👎, the ♻️ button or **F**.
+- **🧩 Rebuild game (J).** Up to 12 parts fly off, and you put the model back together against the clock. Hints cost +10 seconds, and your best time is saved for each model.
+- **Pull apart with two hands.** Pinch with both hands and spread them to explode the model.
+
+**Smarter webcam and 15 hand signs**
+
+- **Signs:** 🫰 snap (summon), ✊ fist (form, then move it to grab-rotate), ✋ open (explode by how wide your hand is), ☝️ point (select), 🤏 pinch (grab and move), 👌 OK (isolate a part), 👍 explain, 👎 reassemble, ✌️ next model, 3️⃣ three fingers (cut-away), 🤘 rock (switch view), 🤙 shaka (guided tour), 👋 swipe (previous/next), 🙌 two hands (zoom and turn), 🤏🤏 both pinching (pull apart). You can also point with one hand while rotating with a fist in the other.
+- **Steady tracking.** One-Euro smoothing removes cursor jitter. Each sign must hold for a few frames before it counts, so it doesn't flicker. Pinches are easier to hold than to start.
+- **Knows left from right.** It keeps both hands separate, even when they cross.
+- **🎯 Calibrate (camera panel).** Show an open hand, a fist and a pinch, and BlaiseVR tunes its thresholds to your hand.
+- **Helpful hints.** It warns you if the room is too dark or your hand is too close or too far, and nudges you if no hand is in view. The camera panel shows live FPS and light level, plus a cheat-sheet of signs that lights up the one you're making.
+- **Sound effects.** Ticks, grabs, snaps, whooshes and a victory jingle, all synthesised in the browser (toggle 🔊).
 
 **Smarter**
 
@@ -116,16 +135,21 @@ Add `?skip` to the URL to jump straight past the welcome screen.
 | Gesture | Action | Key |
 |---|---|---|
 | 🫰 Snap | Summon / dissolve | `Space` |
-| ✊ Fist | Form | `F` |
+| ✊ Fist (move it) | Form · grab-rotate | drag |
 | ✋ Open hand | Explode (openness = distance) | `E`, `↑` `↓`, scroll |
 | ☝️ Point & hold | Select part | click |
-| 🤏 Pinch | Pull out / put back | double-click |
+| 🤏 Pinch & hold | Grab and move a part | hold on a part / Shift-drag |
+| 🤏 Quick pinch | Pull out / put back | double-click |
+| 👎 Thumbs down | Reassemble everything | `F` |
+| 👌 OK · 3️⃣ · 🤘 · 🤙 | Isolate · cut-away · view · tour | `Z` · `X` · `S` · `Y` |
+| 👋 Swipe | Previous / next model | `←` `→` |
 | 👍 Thumbs up | Explain aloud | `I` |
 | ✌️ Peace | Next model | `V` `→` `←` `1-9` |
 | 🔄 Twist / raise hand | Rotate / tilt | drag |
-| 🙌 Two hands | Zoom | `+` `-`, ctrl+scroll, pinch |
+| 🙌 Two hands | Zoom · turn | `+` `-`, ctrl+scroll, pinch |
+| 🤏🤏 Both pinching | Pull apart | scroll |
 
-More keys: `/` ask · `Y` tour · `S` view (Realistic / Glow / X-ray) · `X` cut-away (`,` `.` change axis) · `Z` isolate · `L` labels · `A` animate · `R` auto-rotate · `G` hand-rotate · `T` trails · `Q` quiz · `M` voice · `K` record · `P` screenshot · `N` text · `U` import · `B` browse · `C` camera · `D` demo · `H` help.
+More keys: `J` 🧩 Rebuild game · `/` ask · `Y` tour · `S` view (Realistic / Glow / X-ray) · `X` cut-away (`,` `.` change axis) · `Z` isolate · `L` labels · `A` animate · `R` auto-rotate · `G` hand-rotate · `T` trails · `Q` quiz · `M` voice · `K` record · `P` screenshot · `N` text · `U` import · `B` browse · `C` camera · `D` demo · `H` help.
 
 If gestures feel unreliable, set **Sensitivity → More forgiving** in the camera panel. Good lighting and a plain background help.
 
@@ -155,7 +179,9 @@ js/sampler.js       Turns shapes (sphere, box, rounded box, cylinder, capsule, l
 js/models.js        Built-in models (part 1) + realism tuning (materials, flows, texture)
 js/models2.js       12 more models: eye, brain, lungs, digestive, flower, plant cell, okada, danfo,
                     transformer, volcano, Zuma Rock, smartphone
-js/gestures.js      MediaPipe Hand Landmarker (loaded only when you turn on the camera) + pose classifier
+js/gestures.js      MediaPipe Hand Landmarker (loaded only when you turn on the camera), 13-sign classifier,
+                    One-Euro smoothing, pose voting, swipes, light/distance hints, calibration
+js/ao.js, aoWorker.js  Ambient-occlusion bake, run in a Web Worker
 js/importers.js     .json / .glb / .gltf / .obj / .stl / image / text → model
 sw.js               Offline cache (PWA)
 ```

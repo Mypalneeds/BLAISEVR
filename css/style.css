@@ -156,7 +156,7 @@ textarea:focus { outline: 2px solid var(--cyan); }
 #drop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(0, 20, 40, .7); border: 3px dashed var(--cyan); pointer-events: none; }
 #drop div { font-size: 30px; font-weight: 700; text-align: center; display: grid; gap: 6px; }
 #drop small { font: 13px var(--mono); color: var(--muted); }
-#toasts { position: fixed; left: 50%; transform: translateX(-50%); top: 72px; z-index: 25; display: grid; gap: 6px; justify-items: center; pointer-events: none; width: min(560px, calc(100vw - 32px)); }
+#toasts { position: fixed; left: 50%; transform: translateX(-50%); top: 158px; z-index: 25; display: grid; gap: 6px; justify-items: center; pointer-events: none; width: min(560px, calc(100vw - 32px)); }
 .toast { background: var(--glass-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; font-size: 13px; text-align: center; backdrop-filter: blur(12px); animation: rise .25s ease; transition: opacity .4s, transform .4s; }
 .toast.err { border-color: rgba(255, 77, 109, .6); }
 .toast.out { opacity: 0; transform: translateY(-6px); }
@@ -195,3 +195,19 @@ textarea:focus { outline: 2px solid var(--cyan); }
 .res b { display: block; font-size: 14px; }
 .res small { display: block; font: 11px var(--mono); color: var(--cyan); margin: 2px 0 4px; }
 .res i { font-style: normal; color: var(--muted); font-size: 12px; line-height: 1.45; }
+
+/* ---------- grab, game, calibration, gesture guide ---------- */
+#cursor.near span { border-color: var(--ok); box-shadow: 0 0 22px var(--ok); }
+#gameBar { position: fixed; top: 74px; left: 50%; transform: translateX(-50%); z-index: 7; background: var(--glass); border: 1px solid var(--gold); border-radius: var(--r); padding: 10px 16px; display: grid; gap: 2px; text-align: center; min-width: 300px; box-shadow: 0 0 30px rgba(255, 210, 63, .2); backdrop-filter: blur(12px); }
+#gameBar b { font-size: 16px; } #gameBar small { font: 12px var(--mono); color: var(--gold); }
+#gameBar .row { justify-content: center; margin-top: 8px; } #gameBar .row button { padding: 5px 10px; font-size: 12px; }
+#gameDone { position: fixed; left: 50%; top: 40%; transform: translate(-50%, -50%); z-index: 9; font-size: clamp(22px, 4vw, 36px); font-weight: 700; background: var(--glass); border: 1px solid var(--gold); padding: 18px 28px; border-radius: 18px; box-shadow: 0 0 60px rgba(255, 210, 63, .35); animation: rise .4s ease; text-align: center; }
+.calib-text { font-size: 18px; font-weight: 600; min-height: 2.6em; margin: 4px 0; }
+#calibDlg .bar { height: 8px; } #calibDlg .bar i { transition: width .4s; }
+button.calib { background: var(--glass-2); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font-size: 11px; }
+button.calib:hover { border-color: var(--cyan); }
+#cam { width: 240px; }
+#gestureGuide { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 2px; max-height: 120px; overflow-y: auto; }
+#gestureGuide span { font-size: 10px; background: rgba(255, 255, 255, .05); border: 1px solid transparent; border-radius: 6px; padding: 2px 5px; color: var(--muted); display: flex; gap: 3px; align-items: center; }
+#gestureGuide span b { font-size: 12px; font-weight: 400; }
+#gestureGuide span.on { border-color: var(--cyan); color: #fff; background: rgba(0, 229, 255, .15); }

@@ -48,6 +48,8 @@
     <button data-act="snap" title="Snap — summon / dissolve (Space)">🫰<span>Snap</span></button>
     <button data-act="form" title="Form the model (F)">✊<span>Form</span></button>
     <button data-act="explodeBtn" title="Explode / assemble (E)">💥<span>Explode</span></button>
+    <button data-act="reassemble" title="Reassemble everything (F · 👎)">♻️<span>Reassemble</span></button>
+    <button data-act="rebuild" title="Rebuild game — put it back together (J)">🧩<span>Rebuild game</span></button>
     <button data-act="prev" title="Previous model (←)">◀<span>Prev</span></button>
     <button data-act="next" title="Next model (V / →)">▶<span>Next</span></button>
     <button data-act="cut" title="Cut-away slice (X)">✂️<span>Cut</span></button>
@@ -61,6 +63,7 @@
     <button data-act="voice" title="Voice commands (M)">🎙️<span>Voice</span></button>
     <button data-act="record" title="Record video (K)">⏺<span>Record</span></button>
     <button data-act="camera" title="Camera / hand tracking (C)">📷<span>Camera</span></button>
+    <button data-act="sound" class="on" title="Sound effects">🔊<span>Sound</span></button>
     <button data-act="settings" title="Settings">⚙<span>Settings</span></button>
     <button data-act="help" title="Help (H)">?<span>Help</span></button>
   </nav>
@@ -106,8 +109,10 @@
       <div class="cam-row"><span>Hand openness</span><b id="openPct">0%</b></div>
       <div class="bar"><i id="openBar"></i></div>
       <label class="cam-row">Sensitivity
-        <select id="camSens"><option value="strict">Strict</option><option value="standard">Standard</option><option value="forgiving">More forgiving</option></select>
+        <select id="camSens"><option value="strict">Strict</option><option value="standard">Standard</option><option value="forgiving">More forgiving</option><option value="custom">Calibrated</option></select>
       </label>
+      <button class="calib" data-act="calibrate">🎯 Calibrate to my hand</button>
+      <div id="gestureGuide"></div>
     </div>
   </div>
 
@@ -117,6 +122,8 @@
     <p id="quizQ"></p>
     <div id="quizOpts"></div>
   </div>
+  <div id="gameBar" hidden><b id="gameText"></b><small id="gameTime"></small><div class="row"><button id="gameHint">💡 Hint (+10 s)</button><button id="gameStop">✕ Give up</button></div></div>
+  <div id="gameDone" hidden></div>
   <div id="tourBar" hidden><small id="tourStep"></small><b id="tourText"></b><div class="row"><button id="tourPrev">⏮ Back</button><button id="tourNext">Next ⏭</button><button id="tourStop">✕ End tour</button></div></div>
   <div id="findBanner" hidden><b id="findText"></b><small id="findHint"></small><button data-act="quizClose">End quiz</button></div>
 
@@ -128,8 +135,8 @@
       <div class="cards">
         <div><span>🫰</span><b>Snap to summon</b><small>Snap your fingers and the particles appear. Make a fist to form the model.</small></div>
         <div><span>✋</span><b>Open to explode</b><small>The wider you open your hand, the further every part flies apart.</small></div>
-        <div><span>☝️</span><b>Point to learn</b><small>Point at a part to select it. Pinch 🤏 to pull it out. Thumbs-up 👍 to hear it explained.</small></div>
-        <div><span>✌️</span><b>Twist, tilt, zoom</b><small>Twist your hand to rotate, raise it to tilt, two hands 🙌 to zoom. Peace sign for the next model.</small></div>
+        <div><span>🤏</span><b>Grab &amp; move</b><small>Point ☝️ to select, pinch and hold 🤏 to pick a part up and move it, 👎 to put everything back.</small></div>
+        <div><span>🧩</span><b>Rebuild it</b><small>Play the Rebuild game: parts scatter and you put them back. Swipe 👋 or ✌️ for the next model.</small></div>
       </div>
       <div class="cta">
         <button id="startCam" class="primary">📷 Start with camera</button>
@@ -148,14 +155,23 @@
           <h3>Gestures</h3>
           <table>
             <tr><td>🫰 Snap</td><td>Summon / dissolve</td></tr>
-            <tr><td>✊ Fist</td><td>Form the model</td></tr>
+            <tr><td>✊ Fist (move it)</td><td>Form · grab-rotate the model</td></tr>
             <tr><td>✋ Open hand</td><td>Explode (openness = distance)</td></tr>
             <tr><td>☝️ Point &amp; hold</td><td>Select a part</td></tr>
-            <tr><td>🤏 Pinch</td><td>Pull part out / put back</td></tr>
+            <tr><td>🤏 Pinch &amp; hold</td><td>Grab a part and move it (closer/further too)</td></tr>
+            <tr><td>🤏 Quick pinch</td><td>Pull part out / put back</td></tr>
+            <tr><td>👌 OK</td><td>Isolate pointed part (or labels)</td></tr>
+            <tr><td>👎 Thumbs down</td><td>Reassemble everything</td></tr>
+            <tr><td>3️⃣ Three fingers</td><td>Cut-away on/off</td></tr>
+            <tr><td>🤘 Rock</td><td>Change view (Realistic / Glow / X-ray)</td></tr>
+            <tr><td>🤙 Shaka</td><td>Guided tour</td></tr>
+            <tr><td>👋 Swipe</td><td>Previous / next model</td></tr>
+            <tr><td>🤏🤏 Pinch both hands</td><td>Pull the model apart</td></tr>
             <tr><td>👍 Thumbs up</td><td>Explain selected part aloud</td></tr>
             <tr><td>✌️ Peace</td><td>Next model</td></tr>
             <tr><td>🔄 Twist hand</td><td>Rotate · raise / lower to tilt</td></tr>
-            <tr><td>🙌 Two hands</td><td>Zoom</td></tr>
+            <tr><td>🙌 Two hands</td><td>Zoom (distance) · turn (twist)</td></tr>
+            <tr><td>☝️ + ✊</td><td>Point with one hand, rotate with the other</td></tr>
           </table>
           <h3>Mouse &amp; touch</h3>
           <table>
@@ -164,13 +180,15 @@
             <tr><td>Ctrl/⇧ + scroll, pinch</td><td>Zoom</td></tr>
             <tr><td>Click / tap</td><td>Select part</td></tr>
             <tr><td>Double-click</td><td>Pull part out</td></tr>
+            <tr><td>Hold on a part, Shift+drag, right-drag</td><td>Move the part · scroll = closer/further</td></tr>
           </table>
         </div>
         <div>
           <h3>Keyboard</h3>
           <table class="keys">
             <tr><td><kbd>Space</kbd></td><td>Snap — summon / dissolve</td></tr>
-            <tr><td><kbd>F</kbd> <kbd>O</kbd> <kbd>E</kbd></td><td>Form · explode toggle</td></tr>
+            <tr><td><kbd>F</kbd> <kbd>O</kbd> <kbd>E</kbd></td><td>Reassemble · explode toggle</td></tr>
+            <tr><td><kbd>J</kbd></td><td>🧩 Rebuild game</td></tr>
             <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>Explode more / less</td></tr>
             <tr><td><kbd>V</kbd> <kbd>→</kbd> <kbd>←</kbd> <kbd>1-9</kbd></td><td>Next / previous / jump to model</td></tr>
             <tr><td><kbd>B</kbd></td><td>Browse models</td></tr>
@@ -207,7 +225,7 @@
         <select id="setColor"><option value="parts">By part</option><option value="rainbow">Rainbow</option><option value="heat">Heat (height)</option><option value="ice">Ice</option><option value="gold">Gold</option></select>
       </label>
       <label class="set">Gesture sensitivity
-        <select id="setSens"><option value="strict">Strict</option><option value="standard">Standard</option><option value="forgiving">More forgiving</option></select>
+        <select id="setSens"><option value="strict">Strict</option><option value="standard">Standard</option><option value="forgiving">More forgiving</option><option value="custom">Calibrated</option></select>
       </label>
       <label class="set">Animation speed <input id="setAnimSpeed" type="range" min="0.1" max="3" step="0.1" /></label>
       <label class="set chk"><input id="setBloom" type="checkbox" /> Bloom glow</label>
@@ -225,6 +243,15 @@
       <p class="muted">Type a name, a message or a birthday wish. Each letter becomes a part you can explode and pull out. Shift+Enter for a new line.</p>
       <textarea id="textIn" rows="2" maxlength="40" placeholder="HAPPY BIRTHDAY"></textarea>
       <button id="textGo" class="primary">✨ Build it</button>
+    </div>
+  </div>
+
+  <div id="calibDlg" class="overlay dlg" hidden>
+    <div class="dialog">
+      <div class="info-head"><h2>🎯 Calibrate gestures</h2><button class="x" data-act="closeDlg" aria-label="Close">✕</button></div>
+      <p class="muted">BlaiseVR will learn your hand's shape so signs are recognised reliably. Keep one hand in view of the camera.</p>
+      <p id="calibText" class="calib-text">Get ready…</p>
+      <div class="bar"><i id="calibBar"></i></div>
     </div>
   </div>
 

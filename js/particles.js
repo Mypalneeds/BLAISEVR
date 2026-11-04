@@ -17,10 +17,12 @@ attribute vec3 aColor;
 attribute vec3 aNormal;
 attribute float aFlow;
 attribute float aMat;
+attribute float aAO;
 attribute vec4 aRnd;
 varying vec3 vColor;
 varying float vAlpha;
 varying float vShade;
+varying vec3 vN;
 vec3 qrot(vec4 q, vec3 v){ return v + 2.0*cross(q.xyz, cross(q.xyz, v) + q.w*v); }
 void main(){
   int i = int(aPart + 0.5);
@@ -62,7 +64,8 @@ void main(){
   vec3 Rv = reflect(-V, N);
   vec3 envc = mix(vec3(0.08, 0.07, 0.06), vec3(0.75, 0.85, 1.0), smoothstep(-0.4, 0.6, Rv.y)) * env;
   vec3 alb = aColor;
-  vec3 lit = alb * (0.16 + dif * kd + fil + bck) + vec3(spec) + alb * rim + envc * mix(vec3(1.0), alb, 0.55);
+  float ao = aAO;
+  vec3 lit = alb * (0.16 * ao + dif * kd * mix(0.3, 1.0, ao) + (fil + bck) * ao) + vec3(spec) * ao + alb * rim * ao + envc * mix(vec3(1.0), alb, 0.55) * ao;
   if (mt == 2) lit += vec3(0.25, 0.04, 0.02) * pow(1.0 - abs(ndv), 2.0) * 0.6;    // subsurface-ish warm rim
   if (mt == 4 || hasN < 0.5) lit = alb * (mt == 4 ? 1.35 : 0.95);
   float back = hasN > 0.5 ? smoothstep(-0.4, 0.3, ndv) : 1.0;
@@ -95,10 +98,12 @@ void main(){
   }
   float fogK = uStyle > 0.5 && uStyle < 1.5 ? 1.0 : mix(1.0, 0.6, smoothstep(6.0, 13.0, -mv.z));
   vColor = col * bright * mix(0.55, 1.0, f) * fogK;
+  if (solidPass) { vec3 x = vColor * 1.02; x = clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); float lum = dot(x, vec3(0.299, 0.587, 0.114)); vColor = clamp(mix(vec3(lum), x, 1.22), 0.0, 1.0); }
   vShade = solidPass ? 1.0 : 0.0;
+  vN = hasN > 0.5 ? N : vec3(0.0);
   float skip = (uPass > 0.5 && uPass < 1.5 && glassy > 0.5) || (uPass > 1.5 && glassy < 0.5) ? 1.0 : 0.0;
   gl_Position = projectionMatrix * mv;
-  float base = solidPass ? mix(uSize, uSolidSize, f) * (0.85 + aRnd.z * 0.3) : uSize * (0.55 + aRnd.z) * (uPass > 1.5 ? 1.15 : 1.0);
+  float base = solidPass ? mix(uSize, uSolidSize * 1.22, f) * (0.85 + aRnd.z * 0.3) : uSize * (0.55 + aRnd.z) * (uPass > 1.5 ? 1.15 : 1.0);
   float sz = base * uPR * (st > 1.5 && uStyle < 0.5 ? 1.35 : 1.0) * mix(0.7, 1.0, f);
   gl_PointSize = (vAlpha < 0.5 || bright < 0.01 || skip > 0.5) ? 0.0 : sz * (300.0 / max(0.1, -mv.z));
 }`;
@@ -107,10 +112,19 @@ const frag = /* glsl */`
 varying vec3 vColor;
 varying float vAlpha;
 varying float vShade;
+varying vec3 vN;
 void main(){
   vec2 c = gl_PointCoord - 0.5; float d = length(c);
-  if (d > 0.5 || vAlpha < 0.01) discard;
-  if (vShade > 0.5) { gl_FragColor = vec4(vColor * (1.0 - 0.35 * d * d * 4.0), 1.0); return; }
+  if (vAlpha < 0.01) discard;
+  if (vShade > 0.5) {
+    // surface splat: each particle is a small disc lying on the surface, so it looks like an ellipse from the side
+    vec2 q = vec2(c.x, -c.y) * 2.0; float r2 = dot(q, q);
+    float l = length(vN.xy);
+    if (l > 0.001) { float nz = max(abs(vN.z), 0.28); vec2 nd = vN.xy / l; float par = dot(q, nd); vec2 perp = q - par * nd; r2 = dot(perp, perp) + par * par / (nz * nz); }
+    if (r2 > 1.0) discard;
+    gl_FragColor = vec4(vColor * (1.0 - 0.18 * r2), 1.0); return;
+  }
+  if (d > 0.5) discard;
   float a = smoothstep(0.5, 0.0, d); a *= a;
   gl_FragColor = vec4(vColor * a, a);
 }`;
@@ -142,7 +156,7 @@ export class ParticleCloud {
     const g = new THREE.BufferGeometry();
     this.pos = new Float32Array(N * 3); this.prev = new Float32Array(N * 3);
     this.partAttr = new Float32Array(N); this.color = new Float32Array(N * 3);
-    this.normal = new Float32Array(N * 3); this.flow = new Float32Array(N); this.mat = new Float32Array(N);
+    this.normal = new Float32Array(N * 3); this.flow = new Float32Array(N); this.mat = new Float32Array(N); this.ao = new Float32Array(N).fill(1);
     const rnd = new Float32Array(N * 4); for (let i = 0; i < rnd.length; i++) rnd[i] = Math.random();
     g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3));
     g.setAttribute('aPrev', new THREE.BufferAttribute(this.prev, 3));
@@ -152,6 +166,7 @@ export class ParticleCloud {
     g.setAttribute('aNormal', new THREE.BufferAttribute(this.normal, 3));
     g.setAttribute('aFlow', new THREE.BufferAttribute(this.flow, 1));
     g.setAttribute('aMat', new THREE.BufferAttribute(this.mat, 1));
+    g.setAttribute('aAO', new THREE.BufferAttribute(this.ao, 1));
     g.setAttribute('aRnd', new THREE.BufferAttribute(rnd, 4));
     g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 40);
     this.geometry = g;
@@ -169,8 +184,8 @@ export class ParticleCloud {
     if (morph && this.model) this.prev.set(this.pos); else this.prev.set(model.positions);
     this.pos.set(model.positions); this.partAttr.set(model.part);
     this.baseColors = model.colors; this.color.set(model.colors);
-    this.normal.set(model.normals); this.flow.set(model.flow); this.mat.set(model.mat);
-    for (const k of ['position', 'aPrev', 'aPart', 'aColor', 'aNormal', 'aFlow', 'aMat']) this.geometry.getAttribute(k).needsUpdate = true;
+    this.normal.set(model.normals); this.flow.set(model.flow); this.mat.set(model.mat); this.ao.set(model.ao);
+    for (const k of ['position', 'aPrev', 'aPart', 'aColor', 'aNormal', 'aFlow', 'aMat', 'aAO']) this.geometry.getAttribute(k).needsUpdate = true;
     this.model = model;
     this.uniforms.uGain.value = model.gain ?? 1;
     this.uniforms.uSolidSize.value = model.solidSize ?? 0.08;
@@ -180,6 +195,7 @@ export class ParticleCloud {
     const step = Math.max(1, Math.floor(this.N / 7000));
     this.pickIdx = []; for (let i = 0; i < this.N; i += step) this.pickIdx.push(i);
   }
+  setAO(ao) { this.ao.set(ao); this.geometry.getAttribute('aAO').needsUpdate = true; }
   setFlowOn(on) { if (!this.model) return; this.model.parts.forEach((p, i) => { const F = this.uniforms.uF.value[i]; if (p.flow && on) F.set(p.flow.speed, p.flow.strength, p.flow.k, 0); else F.y = 0; }); }
   setColorMode(mode) {
     if (!this.model) return;

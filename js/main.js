@@ -8,7 +8,7 @@ import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { MODELS } from './models.js';
 import { buildModel, TARGET_RADIUS } from './sampler.js';
 import { ParticleCloud } from './particles.js';
-import { HandTracker } from './gestures.js';
+import { HandTracker, POSES } from './gestures.js';
 import { fromJSON, from3DFile, fromImage, fromText } from './importers.js';
 
 THREE.ColorManagement.enabled = false; // colours in models are used as-is (sRGB look)
@@ -19,7 +19,7 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const isMobile = matchMedia('(pointer: coarse)').matches || /Android|iPhone|iPad/i.test(navigator.userAgent);
 
 // ---------------------------------------------------------------- settings
-const DEFAULTS = { style: 'real', focus: true, particles: isMobile ? 70000 : 150000, bloom: !isMobile, trails: false, sensitivity: 'standard', colorMode: 'parts', autoRotate: true, animSpeed: 1, gestureRotate: true, voiceRate: 1 };
+const DEFAULTS = { style: 'real', focus: true, sound: true, calib: null, particles: isMobile ? 70000 : 150000, bloom: !isMobile, trails: false, sensitivity: 'standard', colorMode: 'parts', autoRotate: true, animSpeed: 1, gestureRotate: true, voiceRate: 1 };
 const settings = { ...DEFAULTS, ...safeJSON(localStorage.getItem('blaisevr:settings')) };
 function safeJSON(s) { try { return JSON.parse(s) || {}; } catch { return {}; } }
 function saveSettings() { try { localStorage.setItem('blaisevr:settings', JSON.stringify(settings)); } catch {} }
@@ -93,6 +93,14 @@ const S = {
   demo: false, quiz: null, recording: null, lastInput: performance.now(),
 };
 const cache = new Map();
+// ambient occlusion is baked in a background worker so models appear instantly
+let aoWorker = null, aoJob = 0; const aoPending = new Map();
+try { aoWorker = new Worker(new URL('./aoWorker.js', import.meta.url), { type: 'module' }); aoWorker.onmessage = e => { const b = aoPending.get(e.data.id); aoPending.delete(e.data.id); if (!b) return; b.ao = e.data.ao; b.aoDone = true; if (cloud.model === b) cloud.setAO(b.ao); }; } catch { aoWorker = null; }
+function requestAO(b) {
+  if (b.aoDone || b.aoBusy) return; b.aoBusy = true;
+  if (aoWorker) { const id = ++aoJob; aoPending.set(id, b); aoWorker.postMessage({ id, pos: b.positions.slice(), nor: b.normals.slice(), N: b.N }); }
+  else import('./ao.js').then(({ bakeAO }) => setTimeout(() => { b.ao = bakeAO(b.positions, b.normals, b.N); b.aoDone = true; if (cloud.model === b) cloud.setAO(b.ao); }, 50));
+}
 function getBuilt(def) {
   const key = def.id + ':' + settings.particles;
   if (cache.has(key)) return cache.get(key);
@@ -107,7 +115,8 @@ function loadModel(i, { morph = true, announce = true } = {}) {
   const def = models[S.idx];
   let built;
   try { built = getBuilt(def); } catch (e) { toast('Could not build model: ' + e.message, 'err'); console.error(e); return; }
-  S.built = built; cloud.setModel(built, morph && S.summoned);
+  S.built = built; cloud.setModel(built, morph && S.summoned); requestAO(built);
+  S.userOff = built.parts.map(() => new THREE.Vector3()); S.offGoal = built.parts.map(() => new THREE.Vector3()); S.grab = null; if (game?.on) endGame(false);
   if (settings.colorMode !== 'parts') cloud.setColorMode(settings.colorMode);
   S.sel = -1; S.hover = -1; S.isolate = false; S.pulled.clear(); S.pullAmt = built.parts.map(() => 0);
   // textbook-style models open already sliced so you can see inside
@@ -185,7 +194,9 @@ function computeStates() {
       tmpV.copy(p.explode).normalize().multiplyScalar(0.6).addScaledVector(camLocal, 1.6);
       s.t.addScaledVector(tmpV, easeInOut(S.pullAmt[i]));
     }
-    s.hl = S.sel === i ? 2 : S.hover === i ? 1 : 0;
+    if (S.grab?.part !== i) S.userOff[i].lerp(S.offGoal[i], 0.12);
+    s.t.add(S.userOff[i]);
+    s.hl = S.sel === i || S.grab?.part === i ? 2 : S.hover === i ? 1 : 0;
   });
   return states;
 }
@@ -282,27 +293,38 @@ function loop() {
 const pointer = { x: 0, y: 0, inside: false };
 let dragging = false, downAt = null, lastP = null, touches = new Map(), pinchStart = null;
 const cv = renderer.domElement;
+let longPress = null;
 cv.addEventListener('pointerdown', e => {
   cv.setPointerCapture(e.pointerId); touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  downAt = { x: e.clientX, y: e.clientY, t: performance.now() }; lastP = { ...downAt }; dragging = false; activity();
-  if (touches.size === 2) { const [a, b] = [...touches.values()]; pinchStart = { d: Math.hypot(a.x - b.x, a.y - b.y), z: S.zoomT }; }
+  downAt = { x: e.clientX, y: e.clientY, t: performance.now() }; lastP = { ...downAt }; dragging = false; activity(); sfx.unlock();
+  clearTimeout(longPress);
+  if (touches.size === 2) { const [a, b] = [...touches.values()]; pinchStart = { d: Math.hypot(a.x - b.x, a.y - b.y), z: S.zoomT }; endGrab(); return; }
+  if (!S.summoned || S.form < 0.8) return;
+  const p = pickAt(e.clientX, e.clientY);
+  if (p < 0) return;
+  // Shift / Rebuild game = grab at once; otherwise press and hold ~0.35 s on a part to pick it up
+  if (e.shiftKey || game.on || e.button === 2) startGrab(p, e.clientX, e.clientY, 'mouse');
+  else longPress = setTimeout(() => { if (downAt && !dragging) { startGrab(p, downAt.x, downAt.y, 'mouse'); if (navigator.vibrate) navigator.vibrate(15); } }, 350);
 });
+cv.addEventListener('contextmenu', e => e.preventDefault());
 cv.addEventListener('pointermove', e => {
   pointer.x = e.clientX; pointer.y = e.clientY; pointer.inside = true;
   if (touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (touches.size === 2 && pinchStart) { const [a, b] = [...touches.values()]; S.zoomT = clamp(pinchStart.z * pinchStart.d / Math.hypot(a.x - b.x, a.y - b.y), 3, 16); dragging = true; return; }
   if (S.cutOn && !S.autoCut && !downAt) S.cutWT = (e.clientX / innerWidth * 2 - 1) * -TARGET_RADIUS * 1.05;
   if (!downAt) return;
+  if (S.grab?.mode === 'mouse') { moveGrab(e.clientX, e.clientY, 1); dragging = true; return; }
   const dx = e.clientX - lastP.x, dy = e.clientY - lastP.y;
-  if (Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 5) dragging = true;
+  if (Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 5) { dragging = true; clearTimeout(longPress); }
   if (dragging) { S.rotY += dx * 0.008; S.velY = dx * 0.5; S.rotXT = clamp(S.rotXT + dy * 0.006, -1.3, 1.3); S.rotX = S.rotXT; }
   lastP = { x: e.clientX, y: e.clientY };
 });
 const endPtr = e => {
-  touches.delete(e.pointerId); if (touches.size < 2) pinchStart = null;
+  touches.delete(e.pointerId); if (touches.size < 2) pinchStart = null; clearTimeout(longPress);
+  if (S.grab?.mode === 'mouse') { endGrab(); downAt = null; setTimeout(() => dragging = false, 0); return; }
   if (downAt && !dragging && touches.size === 0) {
     if (!S.summoned) summon();
-    else { const p = pickAt(e.clientX, e.clientY); if (p >= 0) select(p === S.sel ? -1 : p, { speak: false }); else select(-1); }
+    else { const p = pickAt(e.clientX, e.clientY); if (p >= 0) { select(p === S.sel ? -1 : p, { speak: false }); sfx.select(); } else select(-1); }
   }
   if (touches.size === 0) { downAt = null; setTimeout(() => dragging = false, 0); }
 };
@@ -313,12 +335,151 @@ cv.addEventListener('wheel', e => {
   e.preventDefault(); activity();
   if (e.ctrlKey || e.metaKey) S.zoomT = clamp(S.zoomT * (1 + e.deltaY * 0.01), 3, 16);
   else if (e.shiftKey) S.zoomT = clamp(S.zoomT * (1 + e.deltaY * 0.0015), 3, 16);
+  else if (S.grab) { S.grab.depth = (S.grab.depth || 0) - e.deltaY * 0.003; moveGrab(S.grab.lastX, S.grab.lastY, 1); }
   else setExplode(S.explodeT - e.deltaY * 0.0012);
 }, { passive: false });
 
+// ---------------------------------------------------------------- grabbing & moving parts (mouse, touch and hand)
+const camRight = new THREE.Vector3(), camUp = new THREE.Vector3(), camFwd = new THREE.Vector3(), invQ = new THREE.Quaternion(), dWorld = new THREE.Vector3();
+const SNAP_R = 0.42;
+function startGrab(part, x, y, mode, size = 1) {
+  if (part < 0 || !S.built) return;
+  S.pulled.delete(part);
+  S.grab = { part, mode, sx: x, sy: y, lastX: x, lastY: y, size0: size, off0: S.userOff[part].clone(), t0: performance.now(), moved: 0, depth: 0 };
+  select(part); sfx.grab();
+  flash('✋ Holding ' + S.built.parts[part].name);
+}
+function moveGrab(x, y, size) {
+  const g = S.grab; if (!g) return;
+  g.lastX = x; g.lastY = y;
+  const wpp = 2 * camera.position.length() * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / innerHeight;
+  camera.matrixWorld.extractBasis(camRight, camUp, camFwd);
+  dWorld.set(0, 0, 0).addScaledVector(camRight, (x - g.sx) * wpp).addScaledVector(camUp, -(y - g.sy) * wpp);
+  const dz = (g.mode === 'hand' ? (size / g.size0 - 1) * 3.2 : 0) + (g.depth || 0);
+  dWorld.addScaledVector(camFwd, dz);                                     // camFwd points toward the viewer (camera +Z)
+  cloud.points.getWorldQuaternion(invQ).invert();
+  dWorld.applyQuaternion(invQ);
+  const off = S.userOff[g.part].copy(g.off0).add(dWorld);
+  // magnetic pull when close to home
+  const home = homeDistance(g.part);
+  if (home < SNAP_R * 1.6) off.multiplyScalar(0.94);
+  g.moved = Math.max(g.moved, Math.hypot(x - g.sx, y - g.sy));
+  $('#cursor').classList.toggle('near', home < SNAP_R);
+}
+// distance of a part from where it belongs (taking the current explode into account)
+function homeDistance(i) { return S.userOff[i].length(); }
+function endGrab() {
+  const g = S.grab; if (!g) return;
+  S.grab = null; $('#cursor').classList.remove('near');
+  const i = g.part, quick = performance.now() - g.t0 < 300 && g.moved < 14;
+  S.offGoal[i].copy(S.userOff[i]);
+  if (quick && g.mode === 'hand' && !game.on) { S.offGoal[i].copy(g.off0); S.userOff[i].copy(g.off0); togglePull(i); sfx.select(); return; }
+  if (homeDistance(i) < SNAP_R) { S.offGoal[i].set(0, 0, 0); sfx.snap(); if (game.on) placed(i); else flash('🧲 Snapped back into place'); }
+  else sfx.drop();
+}
+function reassemble(announce = true) {
+  if (!S.built) return;
+  S.grab = null; S.pulled.clear(); S.offGoal.forEach(v => v.set(0, 0, 0)); S.isolate = false;
+  if (!S.summoned) summon(); setExplode(0); select(-1); sfx.whoosh(false);
+  if (game.on) endGame(false);
+  if (announce) flash('♻️ Reassembled');
+}
+const anyMoved = () => S.userOff?.some(v => v.lengthSq() > 0.0004) || S.offGoal?.some(v => v.lengthSq() > 0.0004);
+
+// ---------------------------------------------------------------- 🧩 Rebuild game: put the model back together
+const game = { on: false, placed: new Set(), todo: [], start: 0, timer: null, hints: 0 };
+function startRebuild() {
+  if (!S.built) return;
+  if (S.quiz) endQuiz(true); if (tour.on) toggleTour(false); if (S.demo) toggleDemo(false);
+  if (!S.summoned) summon();
+  reassemble(false); if (S.cutOn && !S.autoCut) toggleCut(false);
+  const parts = S.built.parts, big = parts.reduce((b, p, i) => p.count > parts[b].count ? i : b, 0);
+  const order = parts.map((_, i) => i).filter(i => i !== big).sort(() => Math.random() - 0.5).slice(0, 12);
+  game.todo = order; game.placed = new Set(parts.map((_, i) => i).filter(i => !order.includes(i)));
+  game.total = parts.length; game.hints = 0; game.on = true; game.start = performance.now();
+  S.zoomT = Math.max(S.zoomT, 9.5); S.rotXT = 0.35;
+  setTimeout(() => {
+    order.forEach((i, k) => {
+      const p = parts[i], dir = p.explode.lengthSq() > 0.01 ? p.explode.clone().normalize() : new THREE.Vector3(Math.cos(k * 2.4), 0.25, Math.sin(k * 2.4));
+      dir.x += (Math.random() - 0.5) * 0.6; dir.y += (Math.random() - 0.3) * 0.5; dir.z += (Math.random() - 0.5) * 0.6; dir.normalize();
+      S.offGoal[i].copy(dir.multiplyScalar(1.5 + Math.random() * 1.1));
+    });
+    sfx.whoosh(true);
+  }, 400);
+  $('#gameBar').hidden = false; btnState('rebuild', true); updateGame();
+  clearInterval(game.timer); game.timer = setInterval(updateGame, 500);
+  speak(`Rebuild the ${models[S.idx].name}. Pinch and drag each part back to where it belongs.`);
+  toast('🧩 Pinch 🤏 (or drag with the mouse) each floating part back into place');
+}
+function placed(i) {
+  game.placed.add(i); select(-1);
+  flash(`✅ ${S.built.parts[i].name} placed`);
+  updateGame();
+  if (game.todo.every(k => game.placed.has(k))) {
+    const secs = (performance.now() - game.start) / 1000 + game.hints * 10, key = 'blaisevr:rebuild:' + models[S.idx].id;
+    const best = Math.min(secs, +(localStorage.getItem(key) || Infinity)); try { localStorage.setItem(key, best); } catch {}
+    endGame(false); sfx.win();
+    flash(`🏆 Rebuilt in ${fmtTime(secs)}!`);
+    $('#gameDone').textContent = `🏆 Rebuilt in ${fmtTime(secs)} · best ${fmtTime(best)}`; $('#gameDone').hidden = false; setTimeout(() => $('#gameDone').hidden = true, 6000);
+    speak(`Well done! You rebuilt the ${models[S.idx].name} in ${Math.round(secs)} seconds.`);
+    setExplode(0.0);
+  }
+}
+function gameHint() {
+  if (!game.on) return;
+  const i = game.todo.find(k => !game.placed.has(k)); if (i == null) return;
+  game.hints++; S.offGoal[i].set(0, 0, 0); sfx.snap(); placed(i);
+}
+function endGame(reset = true) {
+  clearInterval(game.timer); game.on = false; $('#gameBar').hidden = true; btnState('rebuild', false);
+  if (reset) reassemble(false);
+}
+const fmtTime = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+function updateGame() {
+  if (!game.on) return;
+  const done = game.todo.filter(k => game.placed.has(k)).length, best = localStorage.getItem('blaisevr:rebuild:' + models[S.idx].id);
+  $('#gameText').textContent = `🧩 Rebuild: ${done} / ${game.todo.length} parts placed`;
+  $('#gameTime').textContent = `${fmtTime((performance.now() - game.start) / 1000 + game.hints * 10)}${best ? ' · best ' + fmtTime(+best) : ''}`;
+}
+$('#gameHint').onclick = gameHint; $('#gameStop').onclick = () => endGame(true);
+
+// ---------------------------------------------------------------- sound effects (synthesised with Web Audio — no files, no cost)
+const sfx = (() => {
+  let ctx = null;
+  const ac = () => { if (!ctx) try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch {} if (ctx?.state === 'suspended') ctx.resume(); return ctx; };
+  function tone(f, d = 0.08, type = 'sine', vol = 0.07, slide = 0, delay = 0) {
+    if (!settings.sound) return; const c = ac(); if (!c) return;
+    const t = c.currentTime + delay, o = c.createOscillator(), g = c.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t); if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, f * slide), t + d);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.008); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    o.connect(g).connect(c.destination); o.start(t); o.stop(t + d + 0.03);
+  }
+  function noise(d, vol, f0, f1) {
+    if (!settings.sound) return; const c = ac(); if (!c) return;
+    const b = c.createBuffer(1, c.sampleRate * d, c.sampleRate), ch = b.getChannelData(0); for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
+    const src = c.createBufferSource(), bp = c.createBiquadFilter(), g = c.createGain(), t = c.currentTime;
+    src.buffer = b; bp.type = 'bandpass'; bp.Q.value = 1.2; bp.frequency.setValueAtTime(f0, t); bp.frequency.exponentialRampToValueAtTime(f1, t + d);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + d * 0.3); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    src.connect(bp).connect(g).connect(c.destination); src.start(t);
+  }
+  let lastTick = 0;
+  return {
+    unlock: () => { if (settings.sound) ac(); },
+    tick: () => { const n = performance.now(); if (n - lastTick > 70) { lastTick = n; tone(1500, 0.025, 'sine', 0.025); } },
+    select: () => { tone(660, 0.07, 'triangle', 0.06); tone(990, 0.09, 'triangle', 0.05, 0, 0.06); },
+    grab: () => tone(260, 0.12, 'square', 0.035, 1.8),
+    drop: () => tone(520, 0.14, 'sine', 0.05, 0.55),
+    snap: () => { tone(900, 0.04, 'square', 0.05); tone(1350, 0.16, 'sine', 0.07, 0, 0.04); },
+    sign: () => tone(1046, 0.05, 'sine', 0.035),
+    whoosh: up => noise(0.45, 0.05, up ? 300 : 1600, up ? 1600 : 300),
+    win: () => [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.22, 'triangle', 0.08, 0, i * 0.12)),
+    err: () => tone(200, 0.18, 'sawtooth', 0.035, 0.7),
+  };
+})();
+
 // ---------------------------------------------------------------- keyboard
 const KEYS = {
-  ' ': toggleSummon, f: () => { summon(); setExplode(0); }, o: () => setExplode(S.explodeT > 0.5 ? 0 : 1), e: () => setExplode(S.explodeT > 0.5 ? 0 : 1),
+  ' ': toggleSummon, f: () => reassemble(), j: () => game.on ? endGame(true) : startRebuild(), o: () => setExplode(S.explodeT > 0.5 ? 0 : 1), e: () => setExplode(S.explodeT > 0.5 ? 0 : 1),
   v: next, arrowright: next, arrowleft: prev, arrowup: () => setExplode(S.explodeT + 0.1), arrowdown: () => setExplode(S.explodeT - 0.1),
   b: () => togglePicker(), g: () => toggleSetting('gestureRotate', 'Hand rotate'), x: () => toggleCut(), ',': () => cycleCutAxis(-1), '.': () => cycleCutAxis(1),
   r: () => { toggleSetting('autoRotate', 'Auto-rotate'); }, l: () => { S.labels = !S.labels; btnState('labels', S.labels); }, t: () => { toggleSetting('trails', 'Trails'); applyFx(); },
@@ -340,57 +501,125 @@ function toggleIsolate() { if (S.sel < 0) { toast('Select a part first'); return
 
 // ---------------------------------------------------------------- hand gestures
 const tracker = new HandTracker($('#camVideo'), $('#camOverlay'));
-tracker.sensitivity = settings.sensitivity;
+tracker.sensitivity = settings.sensitivity; tracker.calib = settings.calib;
 const handCursor = { active: false, x: 0, y: 0 };
-const G = { pose: null, count: 0, dwellPart: -1, dwellStart: 0, lastNext: 0, two: null };
-tracker.onFrame = ({ hands, snap }) => {
-  const cur = $('#cursor');
-  $('#handState').textContent = hands.length ? `${hands.length} hand${hands.length > 1 ? 's' : ''}` : 'no hand';
-  if (!hands.length) { handCursor.active = false; cur.hidden = true; G.pose = null; G.two = null; $('#gestureName').textContent = '—'; return; }
-  activity();
-  if (snap) { toggleSummon(); flash('🫰 Snap!'); }
-  if (hands.length >= 2) {
-    const d = Math.hypot(hands[0].palm.x - hands[1].palm.x, hands[0].palm.y - hands[1].palm.y);
-    if (!G.two) G.two = { d, z: S.zoomT };
-    S.zoomT = clamp(G.two.z * G.two.d / Math.max(0.05, d), 3, 16);
-    $('#gestureName').textContent = '🙌 zoom'; cur.hidden = true; handCursor.active = false; return;
+const G = { slots: {}, dwellPart: -1, dwellStart: 0, lastNav: 0, two: null, lastSign: 0, lastPose: null };
+const ACTION_NAMES = { fist: 'form · move to rotate', open: 'explode', partial: 'explode', point: 'point to select', pinch: 'grab & move', ok: 'isolate part', victory: 'next model', three: 'cut-away', rock: 'change view', shaka: 'guided tour', thumb: 'explain', thumbdown: 'reassemble' };
+tracker.onHint = (k, msg) => toast(msg);
+const toScreen = p => ({ x: clamp(((1 - p.x) - 0.15) / 0.7, 0, 1) * innerWidth, y: clamp((p.y - 0.12) / 0.7, 0, 1) * innerHeight });
+// fires once when a hand settles into a new sign
+function onSign(h, pose) {
+  const SIGNS = ['victory', 'thumb', 'thumbdown', 'ok', 'rock', 'shaka', 'three']; if (!SIGNS.includes(pose)) return;
+  const now = performance.now(); if (now - G.lastSign < 350) return; G.lastSign = now;
+  switch (pose) {
+    case 'victory': if (now - G.lastNav > 1300) { G.lastNav = now; next(); sfx.sign(); } break;
+    case 'thumb': speakPart(S.sel); sfx.sign(); break;
+    case 'thumbdown': reassemble(); break;
+    case 'ok': { const p = S.hover >= 0 ? S.hover : S.sel; if (p >= 0) { select(p); S.isolate = !S.isolate; updateInfo(); flash(S.isolate ? '👌 Isolated ' + S.built.parts[p].name : '👌 Showing all'); } else { S.labels = !S.labels; btnState('labels', S.labels); flash('👌 Labels ' + (S.labels ? 'on' : 'off')); } sfx.sign(); break; }
+    case 'rock': cycleStyle(); flash('🤘 View: ' + STYLE_NAMES[settings.style]); sfx.sign(); break;
+    case 'shaka': toggleTour(); flash('🤙 Tour ' + (tour.on ? 'started' : 'stopped')); sfx.sign(); break;
+    case 'three': toggleCut(); flash('3️⃣ Cut-away ' + (S.cutOn ? 'on' : 'off')); sfx.sign(); break;
   }
-  G.two = null;
-  const h = hands[0];
-  if (h.pose === G.pose) G.count++; else { G.pose = h.pose; G.count = 1; }
-  const holding = G.count >= 3, onset = G.count === 3;
-  $('#gestureName').textContent = { fist: '✊ form', open: '✋ explode', partial: '🖐 explode', point: '☝️ point', pinch: '🤏 pinch', victory: '✌️ next', thumb: '👍 explain' }[h.pose] || h.pose;
+}
+function singleHand(h, cur) {
+  const sl = G.slots[h.side] || (G.slots[h.side] = { pose: null, count: 0, prevPalm: null });
+  if (h.pose === sl.pose) sl.count++; else { if (sl.pose === 'pinch' && S.grab?.mode === 'hand') endGrab(); sl.pose = h.pose; sl.count = 1; }
+  const holding = sl.count >= 2, onset = sl.count === 2;
+  $('#gestureName').textContent = `${POSES[h.pose] || ''} ${ACTION_NAMES[h.pose] || h.pose}`;
+  highlightGuide(h.pose);
   $('#openBar').style.width = `${(h.openness * 100) | 0}%`; $('#openPct').textContent = `${(h.openness * 100) | 0}%`;
-
-  // cursor follows the index fingertip (mirrored, central region mapped to full screen)
-  const mx = clamp(((1 - h.tip.x) - 0.15) / 0.7, 0, 1) * innerWidth, my = clamp((h.tip.y - 0.12) / 0.7, 0, 1) * innerHeight;
-  handCursor.x += (mx - handCursor.x) * 0.5; handCursor.y += (my - handCursor.y) * 0.5;
-  const showCursor = h.pose === 'point' || h.pose === 'pinch';
+  const src = h.pose === 'pinch' ? h.pinchPt : h.tip, sp = toScreen(src);
+  handCursor.x += (sp.x - handCursor.x) * 0.6; handCursor.y += (sp.y - handCursor.y) * 0.6;
+  const showCursor = ['point', 'pinch', 'ok'].includes(h.pose) || !!S.grab;
   handCursor.active = showCursor; cur.hidden = !showCursor;
   if (showCursor) { cur.style.transform = `translate(${handCursor.x}px, ${handCursor.y}px)`; cur.classList.toggle('pinch', h.pose === 'pinch'); }
-
-  if (!holding) return;
+  if (!holding) { sl.prevPalm = h.palm; return; }
+  if (onset) onSign(h, h.pose);
   switch (h.pose) {
-    case 'fist': if (!S.summoned) summon(); if (S.explodeT !== 0) setExplode(0); break;
-    case 'open': case 'partial': if (S.summoned && (!S.cutOn || S.autoCut)) setExplode(clamp((h.openness - 0.35) / 0.5, 0, 1)); break;
-    case 'point': {
-      const p = pickAt(handCursor.x, handCursor.y); S.hover = p;
-      if (p !== G.dwellPart) { G.dwellPart = p; G.dwellStart = performance.now(); }
-      else if (p >= 0 && p !== S.sel && performance.now() - G.dwellStart > 650) select(p);
-      $('#cursor').style.setProperty('--dwell', p >= 0 && p !== S.sel ? Math.min(1, (performance.now() - G.dwellStart) / 650) : 0);
+    case 'fist': {
+      if (!S.summoned) summon();
+      if (onset && (S.explodeT > 0.05 || anyMoved()) && !game.on) { setExplode(0); S.pulled.clear(); sfx.whoosh(false); }
+      if (sl.prevPalm) { S.rotY += -(h.palm.x - sl.prevPalm.x) * 7; S.rotXT = clamp(S.rotXT + (h.palm.y - sl.prevPalm.y) * 5, -1.3, 1.3); S.velY = -(h.palm.x - sl.prevPalm.x) * 60; }
       break;
     }
-    case 'pinch': if (onset) { const p = S.hover >= 0 ? S.hover : S.sel; if (p >= 0) { select(p); togglePull(p); } } break;
-    case 'victory': if (onset && performance.now() - G.lastNext > 1500) { G.lastNext = performance.now(); next(); } break;
-    case 'thumb': if (onset) speakPart(S.sel); break;
+    case 'open': case 'partial':
+      if (S.summoned && !game.on && (!S.cutOn || S.autoCut)) { const before = S.explodeT; setExplode(clamp((h.openness - 0.35) / 0.5, 0, 1)); if (before < 0.2 && S.explodeT >= 0.2) sfx.whoosh(true); }
+      if (S.cutOn && !S.autoCut) S.cutWT = ((1 - h.palm.x) * 2 - 1) * -TARGET_RADIUS * 1.3;
+      if (settings.gestureRotate) { const r = h.roll, dz = 0.22; S.velY = Math.abs(r) > dz ? -(r - Math.sign(r) * dz) * 3 : S.velY * 0.9; S.rotXT = clamp((h.palm.y - 0.5) * 1.6, -1, 1); }
+      break;
+    case 'point': case 'ok': {
+      const p = pickAt(handCursor.x, handCursor.y); if (p !== S.hover && p >= 0) sfx.tick(); S.hover = p;
+      if (h.pose === 'point') {
+        if (p !== G.dwellPart) { G.dwellPart = p; G.dwellStart = performance.now(); }
+        else if (p >= 0 && p !== S.sel && performance.now() - G.dwellStart > 600) { select(p); sfx.select(); }
+        cur.style.setProperty('--dwell', p >= 0 && p !== S.sel ? Math.min(1, (performance.now() - G.dwellStart) / 600) : 0);
+      }
+      break;
+    }
+    case 'pinch':
+      if (onset) { const p = pickAt(handCursor.x, handCursor.y); const t = p >= 0 ? p : S.hover >= 0 ? S.hover : S.sel; if (t >= 0) startGrab(t, handCursor.x, handCursor.y, 'hand', h.size); }
+      else if (S.grab?.mode === 'hand') moveGrab(handCursor.x, handCursor.y, h.size);
+      break;
   }
-  if (S.cutOn && !S.autoCut && (h.pose === 'open' || h.pose === 'partial')) S.cutWT = ((1 - h.palm.x) * 2 - 1) * -TARGET_RADIUS * 1.3;
-  if (settings.gestureRotate && ['open', 'partial', 'fist'].includes(h.pose)) {
-    const r = h.roll, dz = 0.22;
-    S.velY = Math.abs(r) > dz ? -(r - Math.sign(r) * dz) * 3 : S.velY * 0.9;
-    S.rotXT = clamp((h.palm.y - 0.5) * 1.6, -1, 1);
+  sl.prevPalm = h.palm;
+}
+tracker.onFrame = ({ hands, snap, swipe }) => {
+  const cur = $('#cursor');
+  $('#handState').textContent = hands.length ? hands.map(h => (h.side === 'Left' ? 'L' : 'R') + (POSES[h.pose] || '')).join(' ') : 'no hand';
+  $('#camStatus').textContent = `Tracking · ${tracker.fps} fps${tracker.light != null ? ' · light ' + (tracker.light < 0.18 ? 'low ⚠️' : 'ok') : ''}`;
+  if (!hands.length) { handCursor.active = false; cur.hidden = true; G.two = null; if (S.grab?.mode === 'hand') endGrab(); Object.values(G.slots).forEach(s => { s.pose = null; s.count = 0; s.prevPalm = null; }); $('#gestureName').textContent = '—'; highlightGuide(null); return; }
+  activity();
+  if (snap) { toggleSummon(); flash('🫰 Snap!'); sfx.whoosh(S.summoned); }
+  if (swipe && !S.grab && performance.now() - G.lastNav > 900) { G.lastNav = performance.now(); swipe === 'right' ? next() : prev(); flash(swipe === 'right' ? '👉 Next' : '👈 Previous'); sfx.whoosh(true); return; }
+  if (hands.length >= 2) {
+    const [a, b] = hands, act = hands.find(h => ['point', 'pinch', 'ok'].includes(h.pose)), other = hands.find(h => h !== act);
+    // one hand points / grabs while the other (fist) rotates the model
+    if (act && other && other.pose === 'fist') { G.two = null; singleHand(act, cur); const sl = G.slots[other.side] || (G.slots[other.side] = {}); if (sl.prevPalm) { S.rotY += -(other.palm.x - sl.prevPalm.x) * 7; S.rotXT = clamp(S.rotXT + (other.palm.y - sl.prevPalm.y) * 5, -1.3, 1.3); } sl.prevPalm = other.palm; return; }
+    if (S.grab?.mode === 'hand') endGrab();
+    cur.hidden = true; handCursor.active = false;
+    const d = Math.hypot(a.palm.x - b.palm.x, a.palm.y - b.palm.y), ang = Math.atan2(a.palm.y - b.palm.y, a.palm.x - b.palm.x);
+    const stretch = a.pose === 'pinch' && b.pose === 'pinch';
+    if (!G.two || G.two.stretch !== stretch) G.two = { d, ang, z: S.zoomT, ry: S.rotY, e: S.explodeT, stretch };
+    if (stretch) { setExplode(G.two.e + (d - G.two.d) * 2.4); $('#gestureName').textContent = '🤏🤏 pull apart'; }
+    else {
+      S.zoomT = clamp(G.two.z * G.two.d / Math.max(0.05, d), 3, 16);
+      let da = ang - G.two.ang; if (da > Math.PI) da -= 2 * Math.PI; if (da < -Math.PI) da += 2 * Math.PI;
+      S.rotY = G.two.ry - da * 1.5; S.velY = 0;
+      $('#gestureName').textContent = '🙌 zoom · turn';
+    }
+    highlightGuide('two'); return;
   }
+  G.two = null;
+  singleHand(hands[0], cur);
 };
+const GUIDE = [['🫰', 'snap', 'summon'], ['✊', 'fist', 'form / rotate'], ['✋', 'open', 'explode'], ['☝️', 'point', 'select'], ['🤏', 'pinch', 'grab & move'], ['👌', 'ok', 'isolate'], ['👍', 'thumb', 'explain'], ['👎', 'thumbdown', 'reassemble'], ['✌️', 'victory', 'next'], ['3️⃣', 'three', 'cut-away'], ['🤘', 'rock', 'view'], ['🤙', 'shaka', 'tour'], ['👋', 'swipe', 'prev / next'], ['🙌', 'two', 'zoom · turn'], ['🤏🤏', 'two', 'pull apart']];
+$('#gestureGuide').innerHTML = GUIDE.map(([e, k, t]) => `<span data-pose="${k}"><b>${e}</b>${t}</span>`).join('');
+let lastGuide = null;
+function highlightGuide(p) { if (p === lastGuide) return; lastGuide = p; $$('#gestureGuide span').forEach(s => s.classList.toggle('on', s.dataset.pose === p || (p === 'partial' && s.dataset.pose === 'open'))); }
+
+// ---------------------------------------------------------------- calibration wizard
+async function calibrate() {
+  if (!tracker.running) { await toggleCamera(true); if (!tracker.running) return; }
+  const box = $('#calibDlg'), txt = $('#calibText'), bar = $('#calibBar');
+  toggleDlg('#calibDlg', true);
+  const steps = [['open', '✋ Hold up an OPEN hand, fingers spread'], ['fist', '✊ Now make a FIST'], ['pinch', '🤏 Now PINCH your thumb and index finger together']], res = {};
+  for (let k = 0; k < steps.length; k++) {
+    const [key, msg] = steps[k];
+    txt.textContent = msg; bar.style.width = `${(k / steps.length) * 100}%`;
+    await new Promise(r => setTimeout(r, 1300));
+    if (box.hidden) return;
+    txt.textContent = msg + ' — hold still…';
+    res[key] = await tracker.calibrate(key);
+    if (!res[key]) { txt.textContent = '❌ I couldn\'t see your hand. Check the lighting and try again.'; sfx.err(); return; }
+    sfx.sign();
+  }
+  bar.style.width = '100%';
+  const ext = res.fist.ratio + (res.open.ratio - res.fist.ratio) * 0.45, pinch = res.pinch.pinchD + (res.open.pinchD - res.pinch.pinchD) * 0.35;
+  settings.calib = { ext: clamp(ext, 1.15, 1.8), pinch: clamp(pinch, 0.18, 0.5), snap: clamp(pinch * 0.8, 0.15, 0.4) };
+  settings.sensitivity = 'custom'; tracker.sensitivity = 'custom'; tracker.calib = settings.calib; saveSettings(); syncSettingsUI();
+  txt.textContent = '✅ Calibrated to your hand! Gestures are now tuned just for you.'; sfx.win();
+  setTimeout(() => { if (!box.hidden) toggleDlg('#calibDlg', false); }, 2200);
+}
 async function toggleCamera(force) {
   const on = force ?? !tracker.running;
   if (!on) { tracker.stop(); $('#cam').hidden = true; btnState('camera', false); $('#cursor').hidden = true; return; }
@@ -399,6 +628,7 @@ async function toggleCamera(force) {
     toast('Loading hand tracking… (first time takes a few seconds)');
     await tracker.start();
     $('#camStatus').textContent = 'Tracking on-device';
+    if (!settings.calib) setTimeout(() => toast('Tip: press 🎯 Calibrate in the camera panel to tune gestures to your hand'), 4000);
     toast('Camera on · snap 🫰 or make a fist ✊ to summon');
   } catch (e) {
     console.error(e); tracker.stop(); $('#cam').hidden = true; btnState('camera', false);
@@ -444,6 +674,9 @@ function handleVoice(t) {
   const pi = parts.findIndex(p => t.includes(p.name.toLowerCase().replace(/\(.*?\)/g, '').trim()));
   if (pi >= 0) { select(pi); if (has('pull', 'take out', 'remove')) togglePull(pi); else if (has('isolate', 'only')) { S.isolate = true; updateInfo(); } else speakPart(pi); return; }
   if (has('what', 'which', 'where', 'how', 'who', 'find', 'search', 'why')) { const r = search(t); if (r.length && r[0].score >= 6) return goResult(r[0], true); }
+  if (has('rebuild', 'puzzle', 'put it back together')) return startRebuild();
+  if (has('reassemble', 'reset', 'fix it')) return reassemble();
+  if (has('calibrate')) return calibrate();
   if (has('explode', 'open up', 'take apart', 'break')) return setExplode(1);
   if (has('form', 'assemble', 'close', 'put together', 'rebuild')) return setExplode(0);
   if (has('dissolve', 'vanish', 'disappear', 'hide')) return dissolve();
@@ -626,7 +859,7 @@ const ACTIONS = {
   cut: () => toggleCut(), anim: KEYS.a, labels: KEYS.l, style: cycleStyle, tour: () => toggleTour(), search: () => openSearch(), quiz: KEYS.q, voice: toggleVoice, record: toggleRecord, camera: () => toggleCamera(),
   help: () => toggleDlg('#help'), settings: () => toggleDlg('#settings'), browse: () => togglePicker(), text: openText, import: () => $('#file').click(),
   demo: () => toggleDemo(), shot: screenshot, share: share, speak: () => speakPart(S.sel), pull: () => togglePull(S.sel), isolate: toggleIsolate, closeInfo: () => select(-1),
-  closeDlg: () => closeDialogs(), quizClose: () => endQuiz(true), colors: cycleColors,
+  closeDlg: () => closeDialogs(), rebuild: () => game.on ? endGame(true) : startRebuild(), reassemble: () => reassemble(), calibrate: () => calibrate(), sound: () => { settings.sound = !settings.sound; saveSettings(); btnState('sound', settings.sound); toast(settings.sound ? '🔊 Sound on' : '🔇 Sound off'); }, quizClose: () => endQuiz(true), colors: cycleColors,
 };
 document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (b && ACTIONS[b.dataset.act]) { activity(); ACTIONS[b.dataset.act](); } });
 $('#explode').addEventListener('input', e => setExplode(+e.target.value));
@@ -646,14 +879,14 @@ function syncSettingsUI() {
   $('#setParticles').value = settings.particles; $('#setBloom').checked = settings.bloom; $('#setTrails').checked = settings.trails;
   $('#setSens').value = settings.sensitivity; $('#camSens').value = settings.sensitivity; $('#setColor').value = settings.colorMode;
   $('#setAuto').checked = settings.autoRotate; $('#setAnimSpeed').value = settings.animSpeed; $('#setHandRot').checked = settings.gestureRotate;
-  btnState('anim', S.anim); btnState('labels', S.labels);
+  btnState('anim', S.anim); btnState('labels', S.labels); btnState('sound', settings.sound);
 }
 $('#setParticles').onchange = e => { settings.particles = +e.target.value; saveSettings(); cache.clear(); loadModel(S.idx, { morph: false, announce: false }); toast(`${(settings.particles / 1000) | 0}k particles`); };
 $('#setStyle').onchange = e => { settings.style = e.target.value; saveSettings(); applyStyle(); };
 $('#setFocus').onchange = e => { settings.focus = e.target.checked; saveSettings(); };
 $('#setBloom').onchange = e => { settings.bloom = e.target.checked; saveSettings(); applyFx(); };
 $('#setTrails').onchange = e => { settings.trails = e.target.checked; saveSettings(); applyFx(); };
-const setSens = v => { settings.sensitivity = v; tracker.sensitivity = v; saveSettings(); syncSettingsUI(); };
+const setSens = v => { if (v === 'custom' && !settings.calib) { calibrate(); return; } settings.sensitivity = v; tracker.sensitivity = v; saveSettings(); syncSettingsUI(); };
 $('#setSens').onchange = e => setSens(e.target.value); $('#camSens').onchange = e => setSens(e.target.value);
 $('#setColor').onchange = e => { settings.colorMode = e.target.value; cloud.setColorMode(settings.colorMode); saveSettings(); };
 $('#setAuto').onchange = e => { settings.autoRotate = e.target.checked; saveSettings(); };
@@ -662,8 +895,8 @@ $('#setHandRot').onchange = e => { settings.gestureRotate = e.target.checked; sa
 $('#setReset').onclick = () => { localStorage.removeItem('blaisevr:custom'); localStorage.removeItem('blaisevr:settings'); location.reload(); };
 
 // welcome
-$('#startCam').onclick = () => { $('#welcome').hidden = true; summon(); toggleCamera(true); };
-$('#startNoCam').onclick = () => { $('#welcome').hidden = true; summon(); toast('Drag to rotate · scroll to explode · click a part · H for help'); };
+$('#startCam').onclick = () => { sfx.unlock(); $('#welcome').hidden = true; summon(); toggleCamera(true); };
+$('#startNoCam').onclick = () => { sfx.unlock(); $('#welcome').hidden = true; summon(); toast('Drag to rotate · scroll to explode · click a part · H for help'); };
 
 // WebXR (VR headsets like Quest open it in their browser — free)
 if (navigator.xr?.isSessionSupported) navigator.xr.isSessionSupported('immersive-vr').then(ok => {
@@ -782,4 +1015,4 @@ const start = Math.max(0, models.findIndex(m => m.id === hashId));
 loadModel(start, { morph: false, announce: false });
 setScene();
 if (new URLSearchParams(location.search).has('skip')) { $('#welcome').hidden = true; summon(); }
-window.BlaiseVR = { S, models, loadModel, summon, setExplode, select, startQuiz, addModel, fromText, settings, cloud, tracker };
+window.BlaiseVR = { S, models, loadModel, summon, setExplode, select, startQuiz, addModel, fromText, settings, cloud, tracker, startRebuild, reassemble, startGrab, moveGrab, endGrab, game, pickAt, onFrame: (...a) => tracker.onFrame(...a) };

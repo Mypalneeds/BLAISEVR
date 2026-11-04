@@ -236,7 +236,7 @@ export function buildModel(def, N) {
       left -= n;
       color.set(s.color || p.color || '#66ddff');
       const m = MATERIALS[s.mat || p.mat] ?? 0, hasFlow = !!(p.flow || s.flow) && s.flow !== false;
-      const vary = s.vary ?? p.vary ?? 0.4;
+      const vary = s.vary ?? p.vary ?? 0.24;
       sampleShape(s, Math.max(0, n), (x, y, z, nx, ny, nz, ft, rgb) => {
         if (k >= N) return;
         pos[k * 3] = x; pos[k * 3 + 1] = y; pos[k * 3 + 2] = z; part[k] = pi;
@@ -264,6 +264,7 @@ export function buildModel(def, N) {
     pos[i * 3] = (pos[i * 3] - center.x) * scale; pos[i * 3 + 1] = (pos[i * 3 + 1] - center.y) * scale; pos[i * 3 + 2] = (pos[i * 3 + 2] - center.z) * scale;
   }
   const xf = v => vec(v).sub(center).multiplyScalar(scale);
+  const ao = new Float32Array(N).fill(1); // baked later in a worker (see ao.js)
 
   const cent = parts.map(() => new THREE.Vector3()), cnt = new Array(parts.length).fill(0);
   for (let i = 0; i < N; i++) { const pi = part[i]; cent[pi].x += pos[i * 3]; cent[pi].y += pos[i * 3 + 1]; cent[pi].z += pos[i * 3 + 2]; cnt[pi]++; }
@@ -295,7 +296,7 @@ export function buildModel(def, N) {
   const allPts = parts.every(p => p.shapes.every(s => s.t === 'pts'));
   const gain = allPts ? 0.8 : Math.min(1.1, Math.max(0.45, Math.pow(normArea / 45, 0.4)));
   const solidSize = Math.min(0.22, Math.max(0.035, Math.sqrt(normArea / N) * 4.2));
-  return { def, N, positions: pos, part, colors: col, normals: nor, flow, mat, parts: meta, scale, center, gain, solidSize };
+  return { def, N, positions: pos, part, colors: col, normals: nor, flow, mat, ao, parts: meta, scale, center, gain, solidSize };
 }
 
 // scatter cloud used for the dissolved / idle state

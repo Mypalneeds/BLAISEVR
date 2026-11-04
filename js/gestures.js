@@ -1,4 +1,7 @@
-// BlaiseVR — webcam hand tracking (MediaPipe, runs 100% on-device) + gesture classifier.
+// BlaiseVR — webcam hand tracking (MediaPipe, 100% on-device) + a smarter gesture engine:
+//  • One-Euro filtering for steady cursors   • pose voting + hysteresis so signs don't flicker
+//  • 13 hand signs + swipes + snap            • stable left/right hand identity
+//  • lighting / distance hints                • personal calibration
 const VISION_VER = '0.10.18';
 const VISION_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VISION_VER}`;
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
@@ -11,10 +14,26 @@ export const SENSITIVITY = {
   standard: { ext: 1.45, pinch: 0.3, snap: 0.24 },
   forgiving:{ ext: 1.32, pinch: 0.38, snap: 0.3 },
 };
+export const POSES = {
+  fist: '✊', open: '✋', partial: '🖐', point: '☝️', pinch: '🤏', ok: '👌', victory: '✌️', three: '3️⃣',
+  rock: '🤘', shaka: '🤙', thumb: '👍', thumbdown: '👎',
+};
 
-// Classify one hand's 21 landmarks into a pose.
-export function classify(lm, sensName = 'standard') {
-  const S = SENSITIVITY[sensName] || SENSITIVITY.standard;
+// ---------- One-Euro filter: smooth when still, responsive when moving ----------
+class OneEuro {
+  constructor(minCutoff = 1.4, beta = 0.04, dCutoff = 1) { this.mc = minCutoff; this.b = beta; this.dc = dCutoff; this.x = null; this.dx = 0; this.t = 0; }
+  static a(cut, dt) { const r = 2 * Math.PI * cut * dt; return r / (r + 1); }
+  f(v, t) {
+    if (this.x === null) { this.x = v; this.t = t; return v; }
+    const dt = Math.max(1e-3, (t - this.t) / 1000); this.t = t;
+    const dx = (v - this.x) / dt; this.dx += OneEuro.a(this.dc, dt) * (dx - this.dx);
+    this.x += OneEuro.a(this.mc + this.b * Math.abs(this.dx), dt) * (v - this.x); return this.x;
+  }
+}
+
+// ---------- classify one hand's 21 landmarks ----------
+export function classify(lm, sensName = 'standard', prevPose = null, calib = null) {
+  const S = { ...(SENSITIVITY[sensName] || SENSITIVITY.standard), ...(sensName === 'custom' && calib ? calib : {}) };
   const w = lm[0], size = dist(w, lm[9]) || 1e-3;
   const fingers = [[8, 5], [12, 9], [16, 13], [20, 17]];
   const ratios = fingers.map(([tip, mcp]) => dist(lm[tip], w) / (dist(lm[mcp], w) || 1e-3));
@@ -22,34 +41,44 @@ export function classify(lm, sensName = 'standard') {
   const openness = ratios.reduce((a, r) => a + Math.min(1, Math.max(0, (r - 1.05) / 0.75)), 0) / 4;
   const pinchD = dist(lm[4], lm[8]) / size;
   const snapD = dist(lm[4], lm[12]) / size;
-  const thumbOut = dist(lm[4], lm[5]) / size > 0.75;
-  const thumbUp = thumbOut && lm[4].y < lm[3].y && lm[3].y < lm[2].y && (lm[2].y - lm[4].y) / size > 0.45;
+  const thumbOut = dist(lm[4], lm[5]) / size > 0.6 && dist(lm[4], lm[17]) / size > 1.0;
+  const thumbVert = (lm[2].y - lm[4].y) / size;  // + = thumb tip above its base
+  const thumbUp = thumbOut && lm[4].y < lm[3].y && lm[3].y < lm[2].y && thumbVert > 0.45;
+  const thumbDown = thumbOut && lm[4].y > lm[3].y && lm[3].y > lm[2].y && thumbVert < -0.45;
   const n = ext.filter(Boolean).length;
+  const pinchTh = S.pinch * (prevPose === 'pinch' || prevPose === 'ok' ? 1.35 : 1);   // easier to keep a pinch than to start one
 
   let pose = 'partial';
-  // pinch = thumb on index tip while the index is still reaching out (in a fist the index is curled into the palm)
-  if (pinchD < S.pinch && ratios[0] > 1.2) pose = 'pinch';
-  else if (n === 0) pose = thumbUp ? 'thumb' : 'fist';
+  if (pinchD < pinchTh && ext[1] && ext[2] && ext[3]) pose = 'ok';
+  else if (pinchD < pinchTh && ratios[0] > 1.2) pose = 'pinch';
+  else if (n === 0) pose = thumbUp ? 'thumb' : thumbDown ? 'thumbdown' : 'fist';
   else if (ext[0] && !ext[1] && !ext[2] && !ext[3]) pose = 'point';
   else if (ext[0] && ext[1] && !ext[2] && !ext[3]) pose = 'victory';
+  else if (ext[0] && ext[1] && ext[2] && !ext[3]) pose = 'three';
+  else if (ext[0] && !ext[1] && !ext[2] && ext[3]) pose = 'rock';
+  else if (!ext[0] && !ext[1] && !ext[2] && ext[3] && thumbOut) pose = 'shaka';
   else if (n >= 4 || (n === 3 && sensName === 'forgiving')) pose = 'open';
 
-  // hand roll (twist): angle of index-MCP -> pinky-MCP line, folded to [-90°, 90°]
   let roll = Math.atan2(lm[17].y - lm[5].y, lm[17].x - lm[5].x);
   if (roll > Math.PI / 2) roll -= Math.PI; if (roll < -Math.PI / 2) roll += Math.PI;
   const palm = { x: (lm[0].x + lm[5].x + lm[17].x) / 3, y: (lm[0].y + lm[5].y + lm[17].y) / 3 };
-  return { pose, openness, pinchD, snapD, roll, palm, tip: lm[8], wrist: w, size, ext, middleCurled: dist(lm[12], w) < dist(lm[9], w) * 1.35, S };
+  const pinchPt = { x: (lm[4].x + lm[8].x) / 2, y: (lm[4].y + lm[8].y) / 2 };
+  return { pose, openness, pinchD, snapD, roll, palm, tip: lm[8], pinchPt, wrist: w, size, ext, ratios, middleCurled: dist(lm[12], w) < dist(lm[9], w) * 1.35, S };
 }
 
 export class HandTracker {
   constructor(video, overlay) {
     this.video = video; this.overlay = overlay; this.ctx = overlay?.getContext('2d');
-    this.running = false; this.onFrame = () => {}; this.sensitivity = 'standard';
-    this._lastT = -1; this._snapArm = 0; this._lastSnap = 0;
+    this.running = false; this.onFrame = () => {}; this.onHint = () => {}; this.sensitivity = 'standard'; this.calib = null;
+    this._lastT = -1; this._snapArm = 0; this._lastSnap = 0; this._lastSwipe = 0;
+    this.slots = { Left: this._slot(), Right: this._slot() };
+    this._lightCv = document.createElement('canvas'); this._lightCv.width = 32; this._lightCv.height = 24;
+    this._lastLight = 0; this._lastHintAt = {}; this._noHandSince = performance.now(); this.fps = 0; this._fc = 0; this._fpsT = performance.now();
   }
+  _slot() { return { votes: [], pose: null, f: { tx: new OneEuro(), ty: new OneEuro(), px: new OneEuro(1, 0.03), py: new OneEuro(1, 0.03), qx: new OneEuro(), qy: new OneEuro(), sz: new OneEuro(0.8, 0.01) }, hist: [] }; }
   async start() {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser has no camera access (needs HTTPS or localhost).');
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }, audio: false });
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 }, facingMode: 'user' }, audio: false });
     this.video.srcObject = stream; await this.video.play();
     if (!this.landmarker) {
       const vision = await import(/* @vite-ignore */ `${VISION_URL}/vision_bundle.mjs`);
@@ -58,39 +87,98 @@ export class HandTracker {
       try { this.landmarker = await vision.HandLandmarker.createFromOptions(fileset, opts('GPU')); }
       catch { this.landmarker = await vision.HandLandmarker.createFromOptions(fileset, opts('CPU')); }
     }
-    this.running = true; this._loop();
+    this.running = true; this._schedule();
   }
   stop() {
     this.running = false;
     this.video.srcObject?.getTracks().forEach(t => t.stop()); this.video.srcObject = null;
     this.ctx?.clearRect(0, 0, this.overlay.width, this.overlay.height);
   }
-  _loop() {
+  _schedule() {
     if (!this.running) return;
-    requestAnimationFrame(() => this._loop());
+    if (this.video.requestVideoFrameCallback) this.video.requestVideoFrameCallback(() => { this._tick(); this._schedule(); });
+    else requestAnimationFrame(() => { this._tick(); this._schedule(); });
+  }
+  _hint(kind, msg, every = 8000) { const now = performance.now(); if (now - (this._lastHintAt[kind] || 0) > every) { this._lastHintAt[kind] = now; this.onHint(kind, msg); } }
+  _tick() {
     const v = this.video;
     if (v.readyState < 2 || v.currentTime === this._lastT) return;
     this._lastT = v.currentTime;
-    let res; try { res = this.landmarker.detectForVideo(v, performance.now()); } catch { return; }
-    const hands = (res.landmarks || []).map((lm, i) => ({ lm, side: res.handednesses?.[i]?.[0]?.categoryName, ...classify(lm, this.sensitivity) }));
-    // snap: thumb touches middle finger, then flicks apart with middle curling into palm
-    const now = performance.now(); let snap = false;
+    const now = performance.now();
+    let res; try { res = this.landmarker.detectForVideo(v, now); } catch { return; }
+    this._fc++; if (now - this._fpsT > 1000) { this.fps = this._fc; this._fc = 0; this._fpsT = now; }
+
+    // lighting check every 2 s
+    if (now - this._lastLight > 2000) {
+      this._lastLight = now;
+      const c = this._lightCv.getContext('2d', { willReadFrequently: true }); c.drawImage(v, 0, 0, 32, 24);
+      const d = c.getImageData(0, 0, 32, 24).data; let L = 0; for (let i = 0; i < d.length; i += 4) L += d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11;
+      this.light = L / (d.length / 4) / 255;
+      if (this.light < 0.18) this._hint('dark', '💡 It\'s quite dark — turn on a light or face a window for better tracking');
+    }
+
+    const raw = (res.landmarks || []).map((lm, i) => ({ lm, side: res.handednesses?.[i]?.[0]?.categoryName || (i ? 'Left' : 'Right'), score: res.handednesses?.[i]?.[0]?.score ?? 1 }));
+    // two hands claiming the same side: give the second one the other side
+    if (raw.length === 2 && raw[0].side === raw[1].side) raw[1].side = raw[0].side === 'Left' ? 'Right' : 'Left';
+    const hands = raw.map(h => {
+      const slot = this.slots[h.side];
+      const c = classify(h.lm, this.sensitivity, slot.pose, this.calib);
+      // pose voting over the last 5 frames
+      slot.votes.push(c.pose); if (slot.votes.length > 5) slot.votes.shift();
+      const tally = {}; slot.votes.forEach(p => tally[p] = (tally[p] || 0) + 1);
+      const [top, cnt] = Object.entries(tally).sort((a, b) => b[1] - a[1])[0];
+      if (cnt >= 3 || !slot.pose) slot.pose = top;
+      const F = slot.f;
+      const tip = { x: F.tx.f(c.tip.x, now), y: F.ty.f(c.tip.y, now) }, palm = { x: F.px.f(c.palm.x, now), y: F.py.f(c.palm.y, now) };
+      const pinchPt = { x: F.qx.f(c.pinchPt.x, now), y: F.qy.f(c.pinchPt.y, now) }, size = F.sz.f(c.size, now);
+      slot.hist.push({ t: now, x: palm.x, y: palm.y }); while (slot.hist.length && now - slot.hist[0].t > 320) slot.hist.shift();
+      this._latest = c;
+      return { ...c, raw: c.pose, pose: slot.pose, tip, palm, pinchPt, size, lm: h.lm, side: h.side, slot };
+    });
+    for (const side of ['Left', 'Right']) if (!hands.some(h => h.side === side)) { const s = this.slots[side]; s.votes = []; s.pose = null; s.hist = []; Object.values(s.f).forEach(f => f.x = null); }
+
+    // snap: thumb touches middle finger, then flicks apart with the middle curling into the palm
+    let snap = false, swipe = null;
     const h0 = hands[0];
     if (h0) {
       if (h0.snapD < h0.S.snap && !h0.ext[0]) this._snapArm = now;
       else if (now - this._snapArm < 380 && h0.snapD > 0.55 && h0.middleCurled && now - this._lastSnap > 1200) { snap = true; this._lastSnap = now; this._snapArm = 0; }
-    }
+      // swipe: fast horizontal move of an open hand
+      const H = h0.slot.hist;
+      if (hands.length === 1 && (h0.pose === 'open' || h0.pose === 'partial') && H.length > 3 && now - this._lastSwipe > 900) {
+        const dx = H[H.length - 1].x - H[0].x, dy = H[H.length - 1].y - H[0].y;
+        if (Math.abs(dx) > 0.24 && Math.abs(dx) > Math.abs(dy) * 2) { swipe = dx < 0 ? 'right' : 'left'; this._lastSwipe = now; H.length = 0; } // image is mirrored
+      }
+      if (h0.size < 0.07) this._hint('far', '🖐 Move your hand a little closer to the camera', 10000);
+      else if (h0.size > 0.42) this._hint('close', '🖐 Move your hand a little further from the camera', 10000);
+      this._noHandSince = now;
+    } else if (now - this._noHandSince > 12000) { this._hint('nohand', '👋 Raise your hand in front of the camera — snap 🫰 or make a fist ✊ to start', 20000); }
+
     this._draw(hands);
-    this.onFrame({ hands, snap, t: now });
+    this.onFrame({ hands, snap, swipe, t: now });
   }
   _draw(hands) {
     const c = this.ctx; if (!c) return;
     const W = this.overlay.width = this.overlay.clientWidth * 2 || 320, H = this.overlay.height = this.overlay.clientHeight * 2 || 240;
     c.clearRect(0, 0, W, H);
-    hands.forEach((h, k) => {
-      c.strokeStyle = k ? '#ff4fd8' : '#00f0ff'; c.lineWidth = 3; c.fillStyle = '#fff';
+    hands.forEach(h => {
+      c.strokeStyle = h.side === 'Left' ? '#ff4fd8' : '#00f0ff'; c.lineWidth = 3; c.fillStyle = '#fff';
       for (const [a, b] of CONNECTIONS) { c.beginPath(); c.moveTo((1 - h.lm[a].x) * W, h.lm[a].y * H); c.lineTo((1 - h.lm[b].x) * W, h.lm[b].y * H); c.stroke(); }
       for (const p of h.lm) { c.beginPath(); c.arc((1 - p.x) * W, p.y * H, 3, 0, 7); c.fill(); }
+      c.font = '600 26px system-ui'; c.fillText(POSES[h.pose] || '', (1 - h.lm[0].x) * W - 14, h.lm[0].y * H + 34);
     });
+  }
+  // ---------- calibration: record your open hand, fist and pinch, set thresholds just for you ----------
+  async calibrate(step) {
+    const out = [];
+    const end = performance.now() + 1400;
+    while (performance.now() < end) {
+      await new Promise(r => setTimeout(r, 60));
+      const c = this._latest; this._latest = null; if (!c) continue;
+      out.push({ ratio: c.ratios.reduce((a, b) => a + b) / 4, pinchD: c.pinchD });
+    }
+    if (out.length < 5) return null;
+    const med = k => { const v = out.map(o => o[k]).sort((a, b) => a - b); return v[Math.floor(v.length / 2)]; };
+    return { ratio: med('ratio'), pinchD: med('pinchD') };
   }
 }
