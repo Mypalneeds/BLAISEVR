@@ -2,6 +2,7 @@
 // Every model uses the same plain format as custom .json models (see docs/MODELS.md),
 // except a few built-ins that use small JS helpers to generate repeated shapes.
 import { rng } from './sampler.js';
+import { MORE_MODELS } from './models2.js';
 
 const D2R = Math.PI / 180;
 const seg = (a, b, r, extra = {}) => ({ t: 'tube', pts: [a, b], r, ...extra });
@@ -385,4 +386,39 @@ const theatre = {
   ],
 };
 
-export const MODELS = [heart, engine, generator, cell, dna, earth, solar, atom, turbine, drone, theatre];
+// ============================================================ realism pass: materials, surface detail, flows
+// tune(model, { 'Part name': { mat, flow, n, nf, nt } , '*': defaults })
+function tune(m, map) {
+  for (const p of m.parts) {
+    const t = { ...(map['*'] || {}), ...(map[p.name] || {}) };
+    if (t.mat && !p.mat) p.mat = t.mat;
+    if (t.flow) p.flow = t.flow;
+    if (t.n) p.shapes.forEach(sh => { if (sh.n == null && !sh.v) { sh.n = t.n; sh.nf = t.nf ?? 6; if (t.nt) sh.nt = t.nt; } });
+  }
+  return m;
+}
+const BLOOD = { speed: 0.7, strength: 1.8, k: 3 };
+tune(heart, {
+  '*': { mat: 'organic', n: 0.018, nf: 7 },
+  'Aorta': { flow: BLOOD }, 'Pulmonary Artery': { flow: BLOOD }, 'Superior Vena Cava': { flow: { ...BLOOD, speed: -0.5 } },
+  'Inferior Vena Cava': { flow: BLOOD }, 'Pulmonary Veins': { flow: { ...BLOOD, speed: -0.6 } }, 'Coronary Arteries': { flow: { speed: 0.9, strength: 2, k: 4 } },
+  'Tricuspid Valve': { mat: 'plastic' }, 'Mitral Valve': { mat: 'plastic' },
+});
+tune(engine, {
+  '*': { mat: 'metal' }, 'Intake Manifold': { mat: 'plastic', flow: { speed: -0.8, strength: 1.4, k: 3 } },
+  'Exhaust Manifold': { flow: { speed: 0.9, strength: 2.2, k: 3 } }, 'Timing Belt': { mat: 'rubber', flow: { speed: 2, strength: 1.2, k: 12 } },
+  'Spark Plugs': { mat: 'plastic' }, 'Oil Pan': { mat: 'metal' },
+});
+tune(generator, { '*': { mat: 'metal' }, 'Fuel Tank': { mat: 'plastic' }, 'Frame': { mat: 'plastic' }, 'Control Panel': { mat: 'plastic' }, 'Recoil Starter': { mat: 'plastic' }, 'Air Filter': { mat: 'plastic' },
+  'Muffler': { flow: { speed: 1, strength: 2, k: 3 } }, 'Rotor': { flow: { speed: 2, strength: 1.5, k: 6 } } });
+tune(cell, { '*': { mat: 'organic', n: 0.02, nf: 5 }, 'Cell Membrane': { mat: 'glass' }, 'Cytoplasm': { mat: 'glass' }, 'Smooth ER': { flow: { speed: 0.4, strength: 1.2, k: 3 } }, 'Rough ER': { flow: { speed: 0.3, strength: 1, k: 2 } } });
+tune(dna, { '*': { mat: 'plastic' }, 'Sugar-Phosphate Backbone (strand 1)': { flow: { speed: 0.3, strength: 1.4, k: 6 } }, 'Sugar-Phosphate Backbone (strand 2)': { flow: { speed: -0.3, strength: 1.4, k: 6 } }, 'Hydrogen Bonds': { mat: 'glow' } });
+tune(earth, { 'Inner Core': { mat: 'glow' }, 'Outer Core': { mat: 'glow', flow: { speed: 0.15, strength: 1, k: 4 } }, 'Mantle': { mat: 'organic', n: 0.03, nf: 3, flow: { speed: 0.08, strength: 0.8, k: 3 } },
+  'Oceanic Crust': { mat: 'plastic' }, 'Continental Crust': { mat: 'matte', n: 0.015, nf: 9 }, 'Atmosphere': { mat: 'glass' }, 'Moon': { mat: 'matte', n: 0.02, nf: 11 } });
+tune(solar, { '*': { mat: 'matte' }, 'Sun': { mat: 'glow', flow: { speed: 0.2, strength: 1.2, k: 5 } }, 'Orbits': { mat: 'glow' }, 'Jupiter': { mat: 'matte', n: 0.01, nf: 20 } });
+tune(atom, { 'Protons': { mat: 'plastic' }, 'Neutrons': { mat: 'plastic' }, 'Inner Shell (n=1)': { mat: 'glow' }, 'Outer Shell (n=2)': { mat: 'glow' }, 'Electron Cloud': { mat: 'glow' } });
+tune(turbine, { '*': { mat: 'plastic' }, 'Gearbox': { mat: 'metal' }, 'Main Shaft': { mat: 'metal' }, 'Yaw System': { mat: 'metal' }, 'Foundation': { mat: 'matte' }, 'Generator': { mat: 'metal', flow: { speed: 2, strength: 1.6, k: 5 } }, 'Transformer': { mat: 'metal' } });
+tune(drone, { '*': { mat: 'plastic' }, 'Motors': { mat: 'metal' }, 'Camera Gimbal': { mat: 'metal' }, 'Landing Gear': { mat: 'rubber' } });
+tune(theatre, { '*': { mat: 'matte' }, 'Main Hall Walls': { mat: 'glass' }, 'Crown': { mat: 'plastic' }, 'Roof Canopy': { mat: 'plastic' } });
+
+export const MODELS = [heart, engine, generator, cell, dna, earth, solar, atom, turbine, drone, theatre, ...MORE_MODELS];

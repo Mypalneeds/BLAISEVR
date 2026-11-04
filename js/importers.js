@@ -45,20 +45,21 @@ function meshesToDef(root, name) {
   if (items.length > MAX_PARTS - 1) groups.push(items.slice(MAX_PARTS - 1));
   const total = items.reduce((a, b) => a + b.area, 0) || 1;
   return import('three/addons/math/MeshSurfaceSampler.js').then(({ MeshSurfaceSampler }) => {
-    const v = new THREE.Vector3();
+    const v = new THREE.Vector3(), nv = new THREE.Vector3(), nm = new THREE.Matrix3();
     const parts = groups.map((g, gi) => {
       const data = [];
       g.forEach(({ m, area }) => {
         const n = Math.max(150, Math.round(36000 * area / total));
         const geo = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry;
         const sampler = new MeshSurfaceSampler(new THREE.Mesh(geo)).build();
-        for (let i = 0; i < n; i++) { sampler.sample(v); v.applyMatrix4(m.matrixWorld); data.push([v.x, v.y, v.z]); }
+        nm.getNormalMatrix(m.matrixWorld);
+        for (let i = 0; i < n; i++) { sampler.sample(v, nv); v.applyMatrix4(m.matrixWorld); nv.applyMatrix3(nm).normalize(); data.push([v.x, v.y, v.z, -1, 0, 0, nv.x, nv.y, nv.z]); }
       });
       const m0 = g[0].m, mat = Array.isArray(m0.material) ? m0.material[0] : m0.material;
       let color = PALETTE[gi % PALETTE.length];
       if (mat?.color) { const c = mat.color.clone(); const hsl = {}; c.getHSL(hsl); if (hsl.s > 0.15 && hsl.l > 0.12) { c.setHSL(hsl.h, Math.max(0.6, hsl.s), Math.min(0.65, Math.max(0.45, hsl.l))); color = '#' + c.getHexString(); } }
       const label = g.length > 1 ? `Other parts (${g.length})` : (m0.name || m0.parent?.name || `Part ${gi + 1}`).replace(/[_\-.]+/g, ' ').trim();
-      return { name: label || `Part ${gi + 1}`, color, shapes: [{ t: 'pts', data }], desc: `Mesh "${label}" from your file.` };
+      return { name: label || `Part ${gi + 1}`, color, mat: mat?.metalness > 0.5 ? 'metal' : 'plastic', shapes: [{ t: 'pts', data }], desc: `Mesh "${label}" from your file.` };
     });
     return { id: 'file-' + name.replace(/\W+/g, '-').toLowerCase(), name: name.replace(/\.\w+$/, ''), emoji: '📦', category: 'Imported', about: `Imported from ${name}. Each mesh in the file became a part you can explode, select and pull out.`, parts };
   });
@@ -136,13 +137,13 @@ export function fromText(text) {
     const x0 = Math.max(0, Math.floor(c.x0) - 4), x1 = Math.min(W, Math.ceil(c.x1) + 4);
     const d = cx.getImageData(x0, 0, x1 - x0, H).data;
     for (let y = 0; y < H; y += 2) for (let x = 0; x < x1 - x0; x += 2) {
-      if (d[(y * (x1 - x0) + x) * 4 + 3] > 128) for (const z of [-0.12, 0, 0.12]) parts[i].data.push([(x + x0 - W / 2) * scale, -(y - H / 2) * scale, z + (Math.random() - .5) * 0.04]);
+      if (d[(y * (x1 - x0) + x) * 4 + 3] > 128) for (const z of [-0.12, 0.12]) parts[i].data.push([(x + x0 - W / 2) * scale, -(y - H / 2) * scale, z, -1, 0, 0, 0, 0, Math.sign(z)]);
     }
   });
   // hsl -> hex for the colour parser
   const tmpC = new THREE.Color();
   return {
     id: 'text-' + text.replace(/\W+/g, '-').toLowerCase(), name: `Text: ${text.replace(/\n/g, ' ')}`, emoji: '🔤', category: 'Text', about: 'Your words, built from particles. Every letter is its own part — open your hand to scatter them.',
-    parts: parts.filter(p => p.data.length).map((p, i) => ({ name: p.name, color: '#' + tmpC.setStyle(p.color).getHexString(), desc: p.desc, shapes: [{ t: 'pts', data: p.data, j: 0.004 }], anim: { type: 'bob', axis: [0, 1, 0], amp: 0.06, freq: 0.5, phase: i * 0.5 } })),
+    parts: parts.filter(p => p.data.length).map((p, i) => ({ name: p.name, color: '#' + tmpC.setStyle(p.color).getHexString(), mat: 'plastic', desc: p.desc, shapes: [{ t: 'pts', data: p.data, j: 0.004 }], anim: { type: 'bob', axis: [0, 1, 0], amp: 0.06, freq: 0.5, phase: i * 0.5 } })),
   };
 }

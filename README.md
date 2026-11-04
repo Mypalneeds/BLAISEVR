@@ -1,6 +1,6 @@
 # ◆ BlaiseVR
 
-**Take anything apart with your bare hands.** BlaiseVR is a free, browser-based 3D lab where engines, hearts, cells, planets and Lagos landmarks are built from up to 250,000 glowing particles. You control them with hand gestures through your webcam.
+**Take anything apart with your bare hands.** BlaiseVR is a free, browser-based 3D lab with 23 lifelike models: the human body, engines, an okada, a danfo, a volcano, planets and Nigerian landmarks. Each one is built from up to 250,000 lit particles, and you control them with hand gestures through your webcam.
 
 - 🫰 **Snap** to summon, ✊ **fist** to form
 - ✋ **Open your hand** to explode the model (the wider you open, the further the parts fly)
@@ -15,37 +15,53 @@ Hand tracking runs **on your device** (MediaPipe). Video never leaves your compu
 
 ## What's inside
 
-**11 built-in models, 100+ explained parts**
+**23 built-in models, 229 explained parts**
 
 | | Model | Highlights |
 |---|---|---|
-| ❤️ | Human Heart | Chambers beat, valves, coronary arteries |
-| 🚗 | 4-Cylinder Car Engine | Pistons pump, crankshaft and camshaft spin in time |
-| ⚡ | Petrol Generator | The "I better pass my neighbour" gen: rotor spins, CO safety tip |
-| 🦠 | Animal Cell | 12 organelles (WAEC / NECO Biology) |
-| 🧬 | DNA Double Helix | A-T / G-C base pairs, hydrogen bonds, rotates |
-| 🌍 | Planet Earth (Layers) | Slice it open with the cut-away to see the core |
-| 🪐 | Solar System | Planets orbit, Saturn's rings, asteroid belt |
-| ⚛️ | Carbon Atom | Protons, neutrons, electron shells in motion |
+| ❤️ | Human Heart | Chambers beat, blood pulses through the arteries and veins |
+| 👁️ | Human Eye | Opens as a textbook cross-section: lens, retina, optic nerve signals |
+| 🧠 | Human Brain | Folded lobes, cerebellum, brainstem, nerve signals |
+| 🫁 | Lungs & Airways | Breathing lungs and diaphragm, branching bronchioles, alveoli |
+| 🍲 | Digestive System | Food moving through the oesophagus and intestines |
+| 🦠 | Animal Cell | 12 organelles inside a see-through membrane |
+| 🌿 | Plant Cell | Cell wall, chloroplasts streaming round, large vacuole |
+| 🌺 | Flower (Hibiscus) | Stamens, pistil and ovules in a labelled exploded view |
+| 🧬 | DNA Double Helix | A-T / G-C base pairs, hydrogen bonds |
+| 🚗 | 4-Cylinder Car Engine | Pistons pump, cams spin, air in and exhaust out |
+| ⚡ | Petrol Generator | The "I better pass my neighbour" gen, with a CO safety tip |
+| 🏍️ | Okada Motorcycle | Spinning spoked wheels, moving chain, shock springs |
+| 🚌 | Danfo Bus | Lagos yellow-and-black, sliding door, roof-rack luggage |
+| 🔌 | Step-down Transformer | Magnetic flux and current flowing (Vs/Vp = Ns/Np) |
 | 🌬️ | Wind Turbine | Blades, gearbox, generator |
 | 🚁 | Quadcopter Drone | Counter-rotating propellers, flight controller, GPS |
+| 📱 | Smartphone Teardown | 13 layers from cover glass to camera module |
+| 🌋 | Volcano (Cross-section) | Glowing magma rising, lava flows, ash cloud |
+| 🌍 | Planet Earth (Layers) | Crust to inner core |
+| 🪐 | Solar System | Planets orbit, Saturn's rings, asteroid belt |
+| ⚛️ | Carbon Atom | Protons, neutrons, electron shells in motion |
+| 🪨 | Zuma Rock | The "Gateway to Abuja", with its famous face |
 | 🎭 | National Theatre, Lagos | Stylised FESTAC '77 landmark |
 
-**What makes it smarter than a plain particle demo**
+**Realistic rendering**
 
-- **Animated machines.** Parts actually work: pistons, orbits, heartbeats, spinning rotors (key **A**).
-- **Import anything.** Drop a `.glb`, `.gltf`, `.obj` or `.stl` from Sketchfab and every mesh becomes an explodable part. Drop a photo and it becomes a 3D relief split into colour layers.
+- **Three views (key S):** *Realistic* (shaded solid surfaces on a studio backdrop with a floor shadow), *Glow* (particles of light) and *X-ray* (edges only, so you can see inside).
+- **Real materials.** Metal reflects its surroundings, organs have soft, warm, skin-like lighting, glass is see-through, and rubber and plastic have their own finishes. Surfaces have natural texture: brain folds, rock, bumpy organs.
+- **Things flow.** Blood pulses through arteries, air moves down the windpipe, current runs through coils, magma rises up the volcano, and food moves through the gut.
+- **Cut-away by default** for the eye and plant cell, like a textbook diagram.
+
+**Smarter**
+
+- **Ask anything (key /).** Offline search across all 23 models and 229 parts. Try "what pumps blood", "powerhouse of the cell", "which part makes electricity" or "where is pollen made". It jumps to the right model and part and explains it. Voice questions work the same way.
+- **Guided tour (key Y).** A narrated walk through every part. The camera flies to each one in turn, and the tour ends with a prompt to take the quiz.
+- **Camera focus.** Selecting a part zooms in and makes it the centre of rotation.
+- **Animated machines.** Pistons, orbits, heartbeats, breathing, rotors (key **A**).
+- **Import anything.** Drop a `.glb`, `.gltf`, `.obj` or `.stl` from Sketchfab and every mesh becomes an explodable part with proper lighting. Drop a photo and it becomes a 3D relief.
 - **Type words into particles.** Press **N**, type a name or "HAPPY BIRTHDAY", and every letter becomes a part.
 - **Quiz with your hands.** Multiple-choice questions plus "find it" rounds where you point at the right part. Best scores are saved.
-- **Voice.** Every part can be read aloud. In Chrome or Edge you can also give commands: "explode", "show the engine", "what is the crankshaft", "pull out the aorta".
-- **Cut-away slicing** on any axis, with a glowing cross-section edge.
-- **Isolate, pull out, labels, solid view, five colour modes, motion trails, bloom.**
-- **Record video** (K) and **screenshots** (P) straight from the browser.
-- **Share links** that open a specific model (`/#m=engine`).
-- **Demo mode** (D) for kiosks and exhibitions; it starts by itself after 90 seconds idle.
-- **WebXR.** On a Meta Quest browser an **Enter VR** button appears.
-- **Installable PWA** that works offline after the first visit.
-- **Mobile-ready.** Touch to rotate, pinch to zoom, lighter particle counts on phones.
+- **Voice.** Every part can be read aloud. In Chrome or Edge you can also give commands: "explode", "show the engine", "what is the crankshaft", "x-ray", "tour".
+- **Cut-away slicing** on any axis, isolate, pull out, labels, five colour modes, motion trails, bloom.
+- **Record video** (K), **screenshots** (P), **share links** (`/#m=okada`), **demo mode** (D), **WebXR** on Meta Quest, **offline PWA**, and a **mobile-ready** layout.
 
 ---
 
@@ -109,7 +125,7 @@ Add `?skip` to the URL to jump straight past the welcome screen.
 | 🔄 Twist / raise hand | Rotate / tilt | drag |
 | 🙌 Two hands | Zoom | `+` `-`, ctrl+scroll, pinch |
 
-More keys: `X` cut-away (`,` `.` change axis) · `Z` isolate · `L` labels · `S` solid · `A` animate · `R` auto-rotate · `G` hand-rotate · `T` trails · `Q` quiz · `M` voice · `K` record · `P` screenshot · `N` text · `U` import · `B` browse · `C` camera · `D` demo · `H` help.
+More keys: `/` ask · `Y` tour · `S` view (Realistic / Glow / X-ray) · `X` cut-away (`,` `.` change axis) · `Z` isolate · `L` labels · `A` animate · `R` auto-rotate · `G` hand-rotate · `T` trails · `Q` quiz · `M` voice · `K` record · `P` screenshot · `N` text · `U` import · `B` browse · `C` camera · `D` demo · `H` help.
 
 If gestures feel unreliable, set **Sensitivity → More forgiving** in the camera panel. Good lighting and a plain background help.
 
@@ -131,11 +147,14 @@ See **[docs/MODELS.md](docs/MODELS.md)**. In short:
 index.html          UI shell + import map (Three.js from jsDelivr CDN)
 css/style.css       All styling
 js/main.js          App state, render loop, mouse/touch/keys, gestures→actions, quiz, voice, recording
-js/particles.js     One GPU draw call. Custom shader: form/dissolve, morph between models,
-                    per-part rotate/scale/translate (explode, animate, pull), cut-away, glow
-js/sampler.js       Turns simple shapes (sphere, box, cylinder, torus, tube, helix…) into particles,
-                    normalises scale, works out explode paths and auto-exposure
-js/models.js        The 11 built-in models
+js/particles.js     GPU particles. Custom shader: lighting with real surface normals, 7 materials,
+                    Realistic/Glow/X-ray views (+ a see-through pass for glass), flow pulses, morphing,
+                    per-part rotate/scale/translate (explode, animate, pull), cut-away
+js/sampler.js       Turns shapes (sphere, box, rounded box, cylinder, capsule, lathe, torus, tube, helix…)
+                    into particles with normals and flow coordinates; noise for organic surfaces
+js/models.js        Built-in models (part 1) + realism tuning (materials, flows, texture)
+js/models2.js       12 more models: eye, brain, lungs, digestive, flower, plant cell, okada, danfo,
+                    transformer, volcano, Zuma Rock, smartphone
 js/gestures.js      MediaPipe Hand Landmarker (loaded only when you turn on the camera) + pose classifier
 js/importers.js     .json / .glb / .gltf / .obj / .stl / image / text → model
 sw.js               Offline cache (PWA)
@@ -149,7 +168,7 @@ sw.js               Offline cache (PWA)
 
 ## Ideas for v2
 
-- More Nigerian curriculum packs: digestive system, eye, ear, flower, transformer, okada engine
+- More curriculum packs: ear, kidney, skeleton, tooth, electric motor, keke napep
 - Classroom mode: a teacher controls the model and students follow on their phones (WebRTC)
 - AI text-to-3D import via a free-tier API
 - Multiplayer "find the part" races

@@ -48,6 +48,7 @@ See [`models/rocket.json`](../models/rocket.json) for a complete working example
 | `parts` | yes | Up to **24** parts |
 | `emoji`, `category`, `about` | no | Picker icon, category label, overview text |
 | `explode` | no | Multiplier for how far parts fly apart (default `1`) |
+| `autoCut` | no | Open already sliced, like a textbook diagram: `[axis, offset]`, where axis is `0`=x, `1`=y, `2`=z, `3`=−x |
 
 ### Part fields
 
@@ -56,6 +57,8 @@ See [`models/rocket.json`](../models/rocket.json) for a complete working example
 | `name` | yes | Part name (labels, quiz, voice: "what is the *booster*") |
 | `shapes` | yes | One or more shapes (below) |
 | `color` | no | Hex colour |
+| `mat` | no | Material: `matte` (default), `metal`, `organic`, `glass` (see-through), `plastic`, `rubber`, `glow` (emits light) |
+| `flow` | no | Moving light pulses along the part (blood, current, air): `{ "speed": 0.7, "strength": 1.8, "k": 3 }`. Negative speed reverses direction. `k` = number of pulses. Works on tubes, helixes, cylinders (along the height), tori and lathes |
 | `desc`, `fact` | no | Explanation text. Parts with a `desc` appear in quizzes |
 | `anim` | no | One animation or an array of them |
 | `ex` | no | Exact explode offset `[x, y, z]` in final scene units (the whole model is scaled to a radius of about 2.2). Without it, parts fly outward from the centre |
@@ -66,19 +69,24 @@ You can use any units you like. BlaiseVR centres and scales the whole model auto
 
 ### Shapes
 
-Every shape takes `c` (centre, default `[0,0,0]`), optional `rot` (Euler degrees `[x, y, z]`), `d` (density) and `j` (random jitter).
+Every shape takes `c` (centre, default `[0,0,0]`), optional `rot` (Euler degrees `[x, y, z]`), `d` (density), `j` (random jitter), and `color` / `mat` to override the part's.
+
+**Surface texture:** add `n` (bump height, e.g. `0.03`), `nf` (bump frequency, e.g. `6`) and optionally `"nt": "ridge"` for folds such as brain gyri, rock or intestines.
 
 | `t` | Fields | Notes |
 |---|---|---|
 | `sphere` | `r`, `v`, `r0` | `v: true` fills the volume; `r0` makes a hollow shell |
 | `ellipsoid` | `r: [rx, ry, rz]`, `v` | Stretched sphere |
 | `box` | `s: [w, h, d]`, `v` | Cuboid |
-| `cyl` | `r`, `h`, `r2`, `axis`, `open`, `v` | Cylinder along `y`. `r2` = top radius (`0` = cone). `axis: "x"`/`"z"`/`[x,y,z]` to point it elsewhere. `open: true` removes the caps |
+| `rbox` | `s: [w, h, d]`, `rad` | Box with rounded edges: phones, buses, batteries |
+| `capsule` | `r`, `h` | Pill shape along `y` |
+| `lathe` | `pts: [[radius, y], ...]`, `arc`, `start` | A profile spun around `y`: vases, rockets, volcanoes, domes. `arc: 0.75` leaves a cut-out wedge |
+| `cyl` | `r`, `h`, `r2`, `axis`, `open`, `v`, `arc`, `start` | Cylinder along `y`. `r2` = top radius (`0` = cone). `axis: "x"`/`"z"`/`[x,y,z]` to point it elsewhere. `open: true` removes the caps |
 | `torus` | `R`, `r`, `arc`, `start`, `axis` | Ring lying flat (normal = `y`). `arc: 0.5` = half ring; `start` in degrees |
 | `disk` | `r`, `r0`, `axis` | Flat disk or ring (normal = `y`) |
 | `tube` | `pts: [[x,y,z], ...]`, `r`, `closed` | Smooth tube through points: pipes, wires, veins |
 | `helix` | `R`, `r`, `h`, `turns`, `phase` | Spiral (springs, DNA) |
-| `pts` | `data: [[x,y,z], ...]` | Raw points. Add `[x,y,z,r,g,b]` (0–1) for per-point colour |
+| `pts` | `data: [[x,y,z], ...]` | Raw points. Use `[x,y,z,r,g,b]` (0–1) for per-point colour, or `[x,y,z,r,g,b,nx,ny,nz]` to add a surface normal for lighting (`r = -1` keeps the part colour) |
 
 ### Animations
 

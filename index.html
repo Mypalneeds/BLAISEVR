@@ -53,8 +53,10 @@
     <button data-act="cut" title="Cut-away slice (X)">✂️<span>Cut</span></button>
     <button data-act="anim" class="on" title="Animate moving parts (A)">⚙️<span>Animate</span></button>
     <button data-act="labels" title="Labels (L)">🏷️<span>Labels</span></button>
-    <button data-act="solid" title="Solid view (S)">◼<span>Solid</span></button>
+    <button data-act="style" title="View style: Realistic / Glow / X-ray (S)">🎥<span>View</span></button>
     <button data-act="colors" title="Colour mode">🎨<span>Colour</span></button>
+    <button data-act="search" title="Ask / search everything (/)">🔎<span>Ask</span></button>
+    <button data-act="tour" title="Guided tour (Y)">🎓<span>Tour</span></button>
     <button data-act="quiz" title="Quiz (Q)">❓<span>Quiz</span></button>
     <button data-act="voice" title="Voice commands (M)">🎙️<span>Voice</span></button>
     <button data-act="record" title="Record video (K)">⏺<span>Record</span></button>
@@ -115,13 +117,14 @@
     <p id="quizQ"></p>
     <div id="quizOpts"></div>
   </div>
+  <div id="tourBar" hidden><small id="tourStep"></small><b id="tourText"></b><div class="row"><button id="tourPrev">⏮ Back</button><button id="tourNext">Next ⏭</button><button id="tourStop">✕ End tour</button></div></div>
   <div id="findBanner" hidden><b id="findText"></b><small id="findHint"></small><button data-act="quizClose">End quiz</button></div>
 
   <!-- welcome -->
   <div id="welcome" class="overlay">
     <div class="welcome">
       <div class="brand big"><span class="logo">◆</span>Blaise<b>VR</b></div>
-      <p class="lede">Engines, hearts, cells, planets and Lagos landmarks made of a quarter-million particles of light — <strong>controlled by your hands</strong>.</p>
+      <p class="lede">23 lifelike models — the human body, engines, okadas, danfos, volcanoes, planets and Nigerian landmarks — built from a quarter-million lit particles and <strong>controlled by your hands</strong>.</p>
       <div class="cards">
         <div><span>🫰</span><b>Snap to summon</b><small>Snap your fingers and the particles appear. Make a fist to form the model.</small></div>
         <div><span>✋</span><b>Open to explode</b><small>The wider you open your hand, the further every part flies apart.</small></div>
@@ -174,7 +177,8 @@
             <tr><td><kbd>X</kbd> <kbd>,</kbd> <kbd>.</kbd></td><td>Cut-away slice · change axis</td></tr>
             <tr><td><kbd>Z</kbd></td><td>Isolate selected part</td></tr>
             <tr><td><kbd>A</kbd> <kbd>R</kbd> <kbd>G</kbd></td><td>Animate · auto-rotate · hand rotate</td></tr>
-            <tr><td><kbd>L</kbd> <kbd>T</kbd> <kbd>S</kbd></td><td>Labels · trails · solid view</td></tr>
+            <tr><td><kbd>L</kbd> <kbd>T</kbd> <kbd>S</kbd></td><td>Labels · trails · view (Realistic / Glow / X-ray)</td></tr>
+            <tr><td><kbd>/</kbd> <kbd>Y</kbd></td><td>Ask (search all models) · guided tour</td></tr>
             <tr><td><kbd>Q</kbd> <kbd>M</kbd> <kbd>I</kbd></td><td>Quiz · voice commands · explain part</td></tr>
             <tr><td><kbd>K</kbd> <kbd>P</kbd></td><td>Record video · screenshot</td></tr>
             <tr><td><kbd>N</kbd> <kbd>U</kbd></td><td>Type text · import a file</td></tr>
@@ -182,7 +186,7 @@
             <tr><td><kbd>+</kbd> <kbd>-</kbd> <kbd>0</kbd></td><td>Zoom · reset view</td></tr>
           </table>
           <h3>Voice (Chrome / Edge)</h3>
-          <p class="muted">“explode”, “assemble”, “next”, “show the engine”, “what is the crankshaft”, “pull out the aorta”, “quiz”, “slice”, “zoom in”.</p>
+          <p class="muted">“explode”, “assemble”, “next”, “show the engine”, “what is the crankshaft”, “what makes pollen”, “pull out the aorta”, “tour”, “x-ray”, “quiz”, “slice”, “zoom in”.</p>
         </div>
       </div>
     </div>
@@ -192,6 +196,10 @@
   <div id="settings" class="overlay dlg" hidden>
     <div class="dialog">
       <div class="info-head"><h2>Settings</h2><button class="x" data-act="closeDlg" aria-label="Close">✕</button></div>
+      <label class="set">View style
+        <select id="setStyle"><option value="real">Realistic (lit solid surfaces)</option><option value="glow">Glow (particles of light)</option><option value="xray">X-ray (see inside)</option></select>
+      </label>
+      <label class="set chk"><input id="setFocus" type="checkbox" /> Camera follows the selected part</label>
       <label class="set">Particles
         <select id="setParticles"><option value="40000">40k — old phones</option><option value="70000">70k — phones</option><option value="120000">120k</option><option value="150000">150k — laptops</option><option value="250000">250k — gaming PCs</option></select>
       </label>
@@ -217,6 +225,14 @@
       <p class="muted">Type a name, a message or a birthday wish. Each letter becomes a part you can explode and pull out. Shift+Enter for a new line.</p>
       <textarea id="textIn" rows="2" maxlength="40" placeholder="HAPPY BIRTHDAY"></textarea>
       <button id="textGo" class="primary">✨ Build it</button>
+    </div>
+  </div>
+
+  <div id="searchDlg" class="overlay dlg" hidden>
+    <div class="dialog wide search">
+      <div class="info-head"><h2>🔎 Ask BlaiseVR</h2><button class="x" data-act="closeDlg" aria-label="Close">✕</button></div>
+      <input id="searchIn" type="search" placeholder="What pumps blood? Which part makes electricity? Where is pollen made?" autocomplete="off" />
+      <div id="searchRes"></div>
     </div>
   </div>
 

@@ -19,7 +19,7 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const isMobile = matchMedia('(pointer: coarse)').matches || /Android|iPhone|iPad/i.test(navigator.userAgent);
 
 // ---------------------------------------------------------------- settings
-const DEFAULTS = { particles: isMobile ? 70000 : 150000, bloom: !isMobile, trails: false, sensitivity: 'standard', colorMode: 'parts', autoRotate: true, animSpeed: 1, gestureRotate: true, voiceRate: 1 };
+const DEFAULTS = { style: 'real', focus: true, particles: isMobile ? 70000 : 150000, bloom: !isMobile, trails: false, sensitivity: 'standard', colorMode: 'parts', autoRotate: true, animSpeed: 1, gestureRotate: true, voiceRate: 1 };
 const settings = { ...DEFAULTS, ...safeJSON(localStorage.getItem('blaisevr:settings')) };
 function safeJSON(s) { try { return JSON.parse(s) || {}; } catch { return {}; } }
 function saveSettings() { try { localStorage.setItem('blaisevr:settings', JSON.stringify(settings)); } catch {} }
@@ -41,12 +41,22 @@ const cloud = new ParticleCloud(settings.particles);
 const pivot = new THREE.Group(); pivot.add(cloud.group); scene.add(pivot);
 
 // faint starfield for depth
+let stars;
 {
   const g = new THREE.BufferGeometry(), n = 1500, a = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) { const r = 40 + Math.random() * 60, t = Math.random() * 6.28, p = Math.acos(2 * Math.random() - 1); a.set([r * Math.sin(p) * Math.cos(t), r * Math.cos(p), r * Math.sin(p) * Math.sin(t)], i * 3); }
   g.setAttribute('position', new THREE.BufferAttribute(a, 3));
-  scene.add(new THREE.Points(g, new THREE.PointsMaterial({ color: 0x334466, size: 0.15, sizeAttenuation: true })));
+  stars = new THREE.Points(g, new THREE.PointsMaterial({ color: 0x334466, size: 0.15, sizeAttenuation: true }));
+  scene.add(stars);
 }
+// studio backdrop + soft floor shadow for the realistic view
+const canvasTex = (w, h, paint) => { const c = document.createElement('canvas'); c.width = w; c.height = h; paint(c.getContext('2d'), w, h); return new THREE.CanvasTexture(c); };
+const studioBg = canvasTex(4, 512, (g, w, h) => { const gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, '#2a3550'); gr.addColorStop(0.5, '#121a2c'); gr.addColorStop(1, '#04060b'); g.fillStyle = gr; g.fillRect(0, 0, w, h); });
+const floorShadow = new THREE.Mesh(new THREE.PlaneGeometry(8, 8), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, opacity: 0.7,
+  map: canvasTex(256, 256, (g, w) => { const gr = g.createRadialGradient(w / 2, w / 2, 0, w / 2, w / 2, w / 2); gr.addColorStop(0, 'rgba(0,0,0,0.85)'); gr.addColorStop(0.45, 'rgba(0,0,0,0.35)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(0, 0, w, w); }) }));
+floorShadow.rotation.x = -Math.PI / 2; floorShadow.position.y = -2.6; scene.add(floorShadow);
+const floorRing = new THREE.Mesh(new THREE.RingGeometry(3.2, 3.24, 96), new THREE.MeshBasicMaterial({ color: 0x3b5b8f, transparent: true, opacity: 0.35, side: THREE.DoubleSide }));
+floorRing.rotation.x = -Math.PI / 2; floorRing.position.y = -2.62; scene.add(floorRing);
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
@@ -54,6 +64,16 @@ const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.
 const trails = new AfterimagePass(0.86);
 composer.addPass(bloom); composer.addPass(trails);
 function applyFx() { bloom.enabled = settings.bloom; trails.enabled = settings.trails; }
+const STYLES = ['real', 'glow', 'xray'], STYLE_NAMES = { real: 'Realistic', glow: 'Glow', xray: 'X-ray' };
+function applyStyle() {
+  const st = settings.style;
+  cloud.setStyle(st);
+  scene.background = st === 'real' ? studioBg : null;
+  stars.visible = st !== 'real'; floorShadow.visible = floorRing.visible = st === 'real';
+  bloom.strength = st === 'real' ? 0.22 : st === 'xray' ? 0.9 : 0.6; bloom.threshold = st === 'real' ? 0.72 : st === 'xray' ? 0.1 : 0.22;
+  btnState('style', st !== 'glow'); const b = $('[data-act="style"] span'); if (b) b.textContent = 'View: ' + STYLE_NAMES[st];
+}
+function cycleStyle() { settings.style = STYLES[(STYLES.indexOf(settings.style) + 1) % STYLES.length]; saveSettings(); applyStyle(); syncSettingsUI(); toast('View: ' + STYLE_NAMES[settings.style]); }
 applyFx();
 
 addEventListener('resize', () => {
@@ -69,7 +89,7 @@ const S = {
   sel: -1, hover: -1, isolate: false, pulled: new Set(), pullAmt: [],
   rotY: 0.5, rotX: 0.15, velY: 0, rotXT: 0.15, zoom: 7.5, zoomT: 7.5,
   cutOn: false, cutAxis: 0, cutW: 0, cutWT: 0.0,
-  labels: false, anim: true, animTime: 0, time: 0, solid: false,
+  labels: false, anim: true, animTime: 0, time: 0, focus: new THREE.Vector3(),
   demo: false, quiz: null, recording: null, lastInput: performance.now(),
 };
 const cache = new Map();
@@ -90,12 +110,16 @@ function loadModel(i, { morph = true, announce = true } = {}) {
   S.built = built; cloud.setModel(built, morph && S.summoned);
   if (settings.colorMode !== 'parts') cloud.setColorMode(settings.colorMode);
   S.sel = -1; S.hover = -1; S.isolate = false; S.pulled.clear(); S.pullAmt = built.parts.map(() => 0);
+  // textbook-style models open already sliced so you can see inside
+  if (def.autoCut) { S.cutAxis = def.autoCut[0]; S.cutW = S.cutWT = def.autoCut[1]; S.cutOn = true; S.autoCut = true; $('#cutBar').hidden = false; $('#cutSlider').value = S.cutWT; btnState('cut', true); }
+  else if (S.autoCut) { S.cutOn = false; S.autoCut = false; $('#cutBar').hidden = true; btnState('cut', false); }
   buildLabels(); updateInfo(); updatePicker();
   $('#modelName').textContent = def.name;
   $('#modelMeta').textContent = `${def.category || ''} · ${built.parts.length} parts · ${(built.N / 1000).toFixed(0)}k particles`;
   if (models[S.idx].id && !models[S.idx].id.startsWith('file-') && !models[S.idx].id.startsWith('img-')) history.replaceState(null, '', '#m=' + encodeURIComponent(def.id));
   if (announce) toast(`${def.emoji || '✨'} ${def.name}`);
   if (S.quiz) endQuiz(true);
+  if (tour?.on && !tour.switching) toggleTour(false);
 }
 const next = () => loadModel(S.idx + 1);
 const prev = () => loadModel(S.idx - 1);
@@ -215,7 +239,7 @@ const escapeHTML = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<':
 const AXES = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [-1, 0, 0]];
 const AXIS_NAMES = ['side (X)', 'top (Y)', 'front (Z)', 'other side'];
 const cutNormal = () => new THREE.Vector3(...AXES[S.cutAxis]);
-function toggleCut(on = !S.cutOn) { S.cutOn = on; if (on && !S.summoned) summon(); $('#cutBar').hidden = !on; btnState('cut', on); toast(on ? `Cut-away on · slicing ${AXIS_NAMES[S.cutAxis]} · move the slider or your mouse/hand` : 'Cut-away off'); }
+function toggleCut(on = !S.cutOn) { S.cutOn = on; S.autoCut = false; if (on && !S.summoned) summon(); $('#cutBar').hidden = !on; btnState('cut', on); toast(on ? `Cut-away on · slicing ${AXIS_NAMES[S.cutAxis]} · move the slider or your mouse/hand` : 'Cut-away off'); }
 function cycleCutAxis(d) { S.cutAxis = (S.cutAxis + d + AXES.length) % AXES.length; toast(`Slice from ${AXIS_NAMES[S.cutAxis]}`); }
 
 // ---------------------------------------------------------------- render loop
@@ -237,11 +261,16 @@ function loop() {
   if (!dragging) { S.rotY += (S.velY + (settings.autoRotate && !S.cutOn && S.sel < 0 ? 0.18 : 0)) * dt; S.velY *= Math.pow(0.12, dt); }
   S.rotX += (S.rotXT - S.rotX) * Math.min(1, dt * 4);
   pivot.rotation.set(S.rotX, S.rotY, 0);
-  if (!renderer.xr.isPresenting) { camera.position.set(0, 0.3, S.zoom * (1 + 0.28 * S.explode) * Math.max(1, 0.8 / camera.aspect)); camera.lookAt(0, 0, 0); }
+  const focusing = settings.focus && S.sel >= 0 && S.form > 0.8;
+  if (!renderer.xr.isPresenting) { camera.position.set(0, 0.3, S.zoom * (1 + 0.28 * S.explode) * Math.max(1, 0.8 / camera.aspect) * (focusing ? 0.78 : 1)); camera.lookAt(0, 0, 0); }
   pivot.updateMatrixWorld();
 
   if (S.built) {
     cloud.applyPartStates(computeStates());
+    // camera focus: slide the model so the selected part sits at the centre of rotation
+    const ft = proj.set(0, 0, 0);
+    if (focusing) { const p = S.built.parts[S.sel], s = states[S.sel]; ft.copy(p.centroid).sub(s.pivot).multiplyScalar(s.scale).applyQuaternion(s.q).add(s.pivot).add(s.t).multiplyScalar(-0.85); }
+    S.focus.lerp(ft, Math.min(1, dt * 3)); cloud.group.position.copy(S.focus);
     if (frame % 3 === 0 && pointer.inside && !dragging && !handCursor.active) S.hover = pickAt(pointer.x, pointer.y);
     updateLabels();
   }
@@ -262,7 +291,7 @@ cv.addEventListener('pointermove', e => {
   pointer.x = e.clientX; pointer.y = e.clientY; pointer.inside = true;
   if (touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (touches.size === 2 && pinchStart) { const [a, b] = [...touches.values()]; S.zoomT = clamp(pinchStart.z * pinchStart.d / Math.hypot(a.x - b.x, a.y - b.y), 3, 16); dragging = true; return; }
-  if (S.cutOn && !downAt) S.cutWT = (e.clientX / innerWidth * 2 - 1) * -TARGET_RADIUS * 1.05;
+  if (S.cutOn && !S.autoCut && !downAt) S.cutWT = (e.clientX / innerWidth * 2 - 1) * -TARGET_RADIUS * 1.05;
   if (!downAt) return;
   const dx = e.clientX - lastP.x, dy = e.clientY - lastP.y;
   if (Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 5) dragging = true;
@@ -293,7 +322,7 @@ const KEYS = {
   v: next, arrowright: next, arrowleft: prev, arrowup: () => setExplode(S.explodeT + 0.1), arrowdown: () => setExplode(S.explodeT - 0.1),
   b: () => togglePicker(), g: () => toggleSetting('gestureRotate', 'Hand rotate'), x: () => toggleCut(), ',': () => cycleCutAxis(-1), '.': () => cycleCutAxis(1),
   r: () => { toggleSetting('autoRotate', 'Auto-rotate'); }, l: () => { S.labels = !S.labels; btnState('labels', S.labels); }, t: () => { toggleSetting('trails', 'Trails'); applyFx(); },
-  s: () => toggleSolid(), a: () => { S.anim = !S.anim; btnState('anim', S.anim); toast(S.anim ? 'Animation on' : 'Animation paused'); },
+  s: () => cycleStyle(), y: () => toggleTour(), '/': () => openSearch(), a: () => { S.anim = !S.anim; cloud.setFlowOn(S.anim); btnState('anim', S.anim); toast(S.anim ? 'Animation & flows on' : 'Animation paused'); },
   q: () => S.quiz ? endQuiz(true) : startQuiz(), m: () => toggleVoice(), k: () => toggleRecord(), i: () => speakPart(S.sel), c: () => toggleCamera(), d: () => toggleDemo(),
   h: () => toggleDlg('#help'), '?': () => toggleDlg('#help'), n: () => openText(), u: () => $('#file').click(), p: () => screenshot(), z: () => toggleIsolate(),
   '+': () => S.zoomT = clamp(S.zoomT * 0.85, 3, 16), '=': () => S.zoomT = clamp(S.zoomT * 0.85, 3, 16), '-': () => S.zoomT = clamp(S.zoomT * 1.15, 3, 16), '0': () => { S.zoomT = 7.5; S.rotXT = 0.15; },
@@ -307,7 +336,6 @@ addEventListener('keydown', e => {
   e.preventDefault(); activity(); fn();
 });
 function toggleSetting(key, label) { settings[key] = !settings[key]; saveSettings(); syncSettingsUI(); toast(`${label} ${settings[key] ? 'on' : 'off'}`); }
-function toggleSolid() { S.solid = !S.solid; cloud.setSolid(S.solid); btnState('solid', S.solid); toast(S.solid ? 'Solid view' : 'Glow view'); }
 function toggleIsolate() { if (S.sel < 0) { toast('Select a part first'); return; } S.isolate = !S.isolate; updateInfo(); }
 
 // ---------------------------------------------------------------- hand gestures
@@ -344,7 +372,7 @@ tracker.onFrame = ({ hands, snap }) => {
   if (!holding) return;
   switch (h.pose) {
     case 'fist': if (!S.summoned) summon(); if (S.explodeT !== 0) setExplode(0); break;
-    case 'open': case 'partial': if (S.summoned && !S.cutOn) setExplode(clamp((h.openness - 0.35) / 0.5, 0, 1)); break;
+    case 'open': case 'partial': if (S.summoned && (!S.cutOn || S.autoCut)) setExplode(clamp((h.openness - 0.35) / 0.5, 0, 1)); break;
     case 'point': {
       const p = pickAt(handCursor.x, handCursor.y); S.hover = p;
       if (p !== G.dwellPart) { G.dwellPart = p; G.dwellStart = performance.now(); }
@@ -356,7 +384,7 @@ tracker.onFrame = ({ hands, snap }) => {
     case 'victory': if (onset && performance.now() - G.lastNext > 1500) { G.lastNext = performance.now(); next(); } break;
     case 'thumb': if (onset) speakPart(S.sel); break;
   }
-  if (S.cutOn && (h.pose === 'open' || h.pose === 'partial')) S.cutWT = ((1 - h.palm.x) * 2 - 1) * -TARGET_RADIUS * 1.3;
+  if (S.cutOn && !S.autoCut && (h.pose === 'open' || h.pose === 'partial')) S.cutWT = ((1 - h.palm.x) * 2 - 1) * -TARGET_RADIUS * 1.3;
   if (settings.gestureRotate && ['open', 'partial', 'fist'].includes(h.pose)) {
     const r = h.roll, dz = 0.22;
     S.velY = Math.abs(r) > dz ? -(r - Math.sign(r) * dz) * 3 : S.velY * 0.9;
@@ -379,12 +407,13 @@ async function toggleCamera(force) {
 }
 
 // ---------------------------------------------------------------- voice: speak + commands (Web Speech API, free & built-in)
-function speak(text) {
-  if (!('speechSynthesis' in window) || !text) return;
+function speak(text, onend) {
+  if (!('speechSynthesis' in window) || !text) { if (onend) setTimeout(onend, Math.max(3000, (text || '').length * 60)); return; }
   speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text); u.rate = settings.voiceRate; u.pitch = 1;
   const v = speechSynthesis.getVoices().find(v => /en[-_](NG|GB|US)/i.test(v.lang) && /natural|google|samantha|daniel/i.test(v.name)) || speechSynthesis.getVoices().find(v => /^en/i.test(v.lang));
   if (v) u.voice = v;
+  if (onend) { let done = false; const fin = () => { if (!done) { done = true; onend(); } }; u.onend = fin; u.onerror = fin; setTimeout(fin, text.length * 95 + 4000); }
   speechSynthesis.speak(u);
 }
 function speakPart(i) {
@@ -414,6 +443,7 @@ function handleVoice(t) {
   const parts = S.built.parts;
   const pi = parts.findIndex(p => t.includes(p.name.toLowerCase().replace(/\(.*?\)/g, '').trim()));
   if (pi >= 0) { select(pi); if (has('pull', 'take out', 'remove')) togglePull(pi); else if (has('isolate', 'only')) { S.isolate = true; updateInfo(); } else speakPart(pi); return; }
+  if (has('what', 'which', 'where', 'how', 'who', 'find', 'search', 'why')) { const r = search(t); if (r.length && r[0].score >= 6) return goResult(r[0], true); }
   if (has('explode', 'open up', 'take apart', 'break')) return setExplode(1);
   if (has('form', 'assemble', 'close', 'put together', 'rebuild')) return setExplode(0);
   if (has('dissolve', 'vanish', 'disappear', 'hide')) return dissolve();
@@ -423,7 +453,10 @@ function handleVoice(t) {
   if (has('quiz', 'test me')) return startQuiz();
   if (has('cut', 'slice')) return toggleCut();
   if (has('label')) { S.labels = !S.labels; return; }
-  if (has('solid')) return toggleSolid();
+  if (has('realistic', 'real view', 'solid')) { settings.style = 'real'; return applyStyle(); }
+  if (has('x-ray', 'xray', 'x ray')) { settings.style = 'xray'; return applyStyle(); }
+  if (has('glow')) { settings.style = 'glow'; return applyStyle(); }
+  if (has('tour', 'guide me', 'teach me')) return toggleTour(true);
   if (has('stop', 'pause')) { S.anim = false; settings.autoRotate = false; return; }
   if (has('play', 'animate', 'run')) { S.anim = true; return; }
   if (has('rotate', 'spin')) { S.velY = 2.5; return; }
@@ -548,7 +581,7 @@ function addModel(def) {
   const existing = models.findIndex(m => m.id === def.id);
   if (existing >= 0) { models[existing] = def; [...cache.keys()].filter(k => k.startsWith(def.id + ':')).forEach(k => cache.delete(k)); }
   else models.push(def);
-  buildPicker(); if (!S.summoned) summon(); loadModel(existing >= 0 ? existing : models.length - 1);
+  index = null; buildPicker(); if (!S.summoned) summon(); loadModel(existing >= 0 ? existing : models.length - 1);
 }
 function saveCustom(def) {
   try { const list = safeJSON(localStorage.getItem('blaisevr:custom')); list[def.id] = def; const s = JSON.stringify(list); if (s.length < 3e6) localStorage.setItem('blaisevr:custom', s); } catch {}
@@ -590,14 +623,14 @@ function updatePicker() { $$('#pickerList .card').forEach(c => c.classList.toggl
 
 const ACTIONS = {
   snap: toggleSummon, form: () => { summon(); setExplode(0); }, explodeBtn: () => setExplode(S.explodeT > 0.5 ? 0 : 1), next, prev,
-  cut: () => toggleCut(), anim: KEYS.a, labels: KEYS.l, solid: toggleSolid, quiz: KEYS.q, voice: toggleVoice, record: toggleRecord, camera: () => toggleCamera(),
+  cut: () => toggleCut(), anim: KEYS.a, labels: KEYS.l, style: cycleStyle, tour: () => toggleTour(), search: () => openSearch(), quiz: KEYS.q, voice: toggleVoice, record: toggleRecord, camera: () => toggleCamera(),
   help: () => toggleDlg('#help'), settings: () => toggleDlg('#settings'), browse: () => togglePicker(), text: openText, import: () => $('#file').click(),
   demo: () => toggleDemo(), shot: screenshot, share: share, speak: () => speakPart(S.sel), pull: () => togglePull(S.sel), isolate: toggleIsolate, closeInfo: () => select(-1),
   closeDlg: () => closeDialogs(), quizClose: () => endQuiz(true), colors: cycleColors,
 };
 document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (b && ACTIONS[b.dataset.act]) { activity(); ACTIONS[b.dataset.act](); } });
 $('#explode').addEventListener('input', e => setExplode(+e.target.value));
-$('#cutSlider').addEventListener('input', e => S.cutWT = +e.target.value);
+$('#cutSlider').addEventListener('input', e => { S.cutWT = +e.target.value; S.autoCut = false; });
 $('#cutAxisBtn').onclick = () => cycleCutAxis(1);
 
 const COLOR_MODES = ['parts', 'rainbow', 'heat', 'ice', 'gold'];
@@ -609,12 +642,15 @@ async function share() {
 
 // settings dialog
 function syncSettingsUI() {
+  $('#setStyle').value = settings.style; $('#setFocus').checked = settings.focus;
   $('#setParticles').value = settings.particles; $('#setBloom').checked = settings.bloom; $('#setTrails').checked = settings.trails;
   $('#setSens').value = settings.sensitivity; $('#camSens').value = settings.sensitivity; $('#setColor').value = settings.colorMode;
   $('#setAuto').checked = settings.autoRotate; $('#setAnimSpeed').value = settings.animSpeed; $('#setHandRot').checked = settings.gestureRotate;
   btnState('anim', S.anim); btnState('labels', S.labels);
 }
 $('#setParticles').onchange = e => { settings.particles = +e.target.value; saveSettings(); cache.clear(); loadModel(S.idx, { morph: false, announce: false }); toast(`${(settings.particles / 1000) | 0}k particles`); };
+$('#setStyle').onchange = e => { settings.style = e.target.value; saveSettings(); applyStyle(); };
+$('#setFocus').onchange = e => { settings.focus = e.target.checked; saveSettings(); };
 $('#setBloom').onchange = e => { settings.bloom = e.target.checked; saveSettings(); applyFx(); };
 $('#setTrails').onchange = e => { settings.trails = e.target.checked; saveSettings(); applyFx(); };
 const setSens = v => { settings.sensitivity = v; tracker.sensitivity = v; saveSettings(); syncSettingsUI(); };
@@ -640,8 +676,107 @@ if (navigator.xr?.isSessionSupported) navigator.xr.isSessionSupported('immersive
 // PWA (works offline after first visit)
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('./sw.js').catch(() => {});
 
+
+// ---------------------------------------------------------------- guided tour (narrated walk through every part)
+const tour = { on: false, i: -1, order: [], token: 0, switching: false };
+function toggleTour(on = !tour.on) {
+  tour.token++;
+  if (!on) {
+    if (!tour.on) return; tour.on = false; if ('speechSynthesis' in window) speechSynthesis.cancel();
+    $('#tourBar').hidden = true; btnState('tour', false); select(-1); setExplode(0); return;
+  }
+  if (S.quiz) endQuiz(true); if (S.demo) toggleDemo(false);
+  const parts = S.built.parts;
+  tour.on = true; tour.i = -1; tour.order = parts.map((_, i) => i).filter(i => parts[i].desc);
+  btnState('tour', true); $('#tourBar').hidden = false; if (!S.summoned) summon();
+  select(-1); setExplode(0.5); settings.autoRotate = true;
+  const d = models[S.idx]; $('#tourText').textContent = `${d.emoji || ''} ${d.name}`; $('#tourStep').textContent = 'Overview';
+  const tk = tour.token; speak(`${d.name}. ${d.about || ''}`, () => tk === tour.token && tourStep(1));
+}
+function tourStep(dir) {
+  if (!tour.on) return;
+  tour.i = Math.max(0, tour.i + dir);
+  if (tour.i >= tour.order.length) {
+    select(-1); setExplode(0); $('#tourStep').textContent = 'Done!'; $('#tourText').textContent = 'Press Q to test yourself with a quiz';
+    const tk = tour.token; speak('That is the end of the tour. Press Q for a quiz to test yourself.', () => tk === tour.token && toggleTour(false)); return;
+  }
+  const pi = tour.order[tour.i], p = S.built.parts[pi];
+  select(pi);
+  $('#tourText').textContent = p.name; $('#tourStep').textContent = `Part ${tour.i + 1} of ${tour.order.length}`;
+  tour.token++; const tk = tour.token;
+  speak(`${p.name}. ${p.desc} ${p.fact || ''}`, () => { if (tk === tour.token) setTimeout(() => tk === tour.token && tourStep(1), 700); });
+}
+$('#tourPrev').onclick = () => tourStep(-1);
+$('#tourNext').onclick = () => tourStep(1);
+$('#tourStop').onclick = () => toggleTour(false);
+
+// ---------------------------------------------------------------- smart search across every model and part (offline)
+const STOP = new Set('what is the a an of does do which where how in my and to for part parts show me find tell about who why are it its this that with on from can i you we by be as at or into make makes made used use called work works thing things there their they'.split(' '));
+const stem = w => w.replace(/(ies)$/, 'y').replace(/(ing|ed|es|s)$/, '');
+const SYN = { electricity: ['electric', 'current', 'voltage', 'power'], breathe: ['breath', 'air', 'oxygen', 'lung'], breath: ['air', 'oxygen'], see: ['vision', 'light', 'eye'], food: ['digest', 'nutrient', 'eat'],
+  think: ['brain', 'neuron'], energy: ['atp', 'respiration', 'power'], heart: ['blood', 'pump'], pump: ['heart'], fuel: ['petrol'], gas: ['petrol', 'exhaust'], spin: ['rotate', 'turn'], hot: ['heat', 'temperature'], sound: ['hear', 'noise'] };
+function tokens(t) { return (t.toLowerCase().match(/[a-z0-9']+/g) || []).filter(w => w.length > 1 && !STOP.has(w)).map(stem); }
+let index = null, df = null;
+function buildIndex() {
+  index = []; df = new Map();
+  const add = e => { index.push(e); new Set([...e.nameT, ...e.textT]).forEach(w => df.set(w, (df.get(w) || 0) + 1)); };
+  models.forEach((m, mi) => {
+    add({ mi, pi: -1, name: m.name, text: m.about || '', nameT: tokens(m.name), textT: tokens(`${m.category || ''} ${m.about || ''}`), headT: tokens((m.about || '').split(' ').slice(0, 8).join(' ')) });
+    (m.parts || []).forEach((p, pi) => add({ mi, pi, name: p.name, text: p.desc || '', nameT: tokens(p.name), textT: tokens(`${p.desc || ''} ${p.fact || ''}`), headT: tokens((p.desc || '').split(' ').slice(0, 7).join(' ')), modelT: tokens(m.name) }));
+  });
+}
+function search(q) {
+  if (!index) buildIndex();
+  const base = tokens(q); if (!base.length) return [];
+  const E = index.length, idf = w => Math.log(1 + E / (1 + (df.get(w) || 0)));
+  const groups = base.map(w => [[w, 1], ...(SYN[w] || []).map(x => [stem(x), 0.55])]);
+  const res = index.map(e => {
+    let score = 0, hit = 0;
+    for (const g of groups) {
+      let best = 0;
+      for (const [w, k] of g) {
+        let sc = 0;
+        if (k === 1) { if (e.nameT.includes(w)) sc += 6; else if (w.length > 3 && e.nameT.some(n => n.startsWith(w) || w.startsWith(n) && n.length > 3)) sc += 4; }
+        if (e.textT.includes(w)) sc += 2; else if (w.length > 4 && e.textT.some(n => n.startsWith(w))) sc += 1;
+        if (e.headT.includes(w)) sc += 1.5;
+        if (e.modelT?.includes(w)) sc += 1;
+        best = Math.max(best, sc * k * idf(w));
+      }
+      if (best > 0) hit++;
+      score += best;
+    }
+    score *= Math.pow(hit / groups.length, 1.5);
+    if (e.pi < 0) score *= 0.85;
+    return { ...e, score };
+  }).filter(e => e.score > 0).sort((a, b) => b.score - a.score);
+  return res.slice(0, 8);
+}
+function goResult(r, speakIt = true) {
+  closeDialogs(); if (!S.summoned) summon();
+  if (r.mi !== S.idx) loadModel(r.mi);
+  if (r.pi >= 0) { setExplode(Math.max(S.explodeT, 0.45)); select(r.pi, { speak: speakIt }); }
+  else if (speakIt) speakPart(-1);
+}
+function openSearch() { toggleDlg('#searchDlg', true); renderSearch(); setTimeout(() => $('#searchIn').focus(), 50); }
+function renderSearch() {
+  const q = $('#searchIn').value.trim(), box = $('#searchRes');
+  const r = q ? search(q) : [];
+  box.innerHTML = '';
+  if (!q) { box.innerHTML = '<p class="muted">Try: <em>what pumps blood</em>, <em>powerhouse of the cell</em>, <em>which part makes electricity</em>, <em>pollen</em>, <em>battery</em>, <em>magma</em>.</p>'; return; }
+  if (!r.length) { box.innerHTML = '<p class="muted">No matches. Try different words.</p>'; return; }
+  r.forEach(e => {
+    const b = document.createElement('button'); b.className = 'res';
+    const m = models[e.mi];
+    b.innerHTML = `<span class="em">${m.emoji || '✨'}</span><span><b>${escapeHTML(e.name)}</b><small>${escapeHTML(e.pi >= 0 ? m.name : 'Model · ' + (m.category || ''))}</small><i>${escapeHTML((e.text || '').slice(0, 120))}${(e.text || '').length > 120 ? '…' : ''}</i></span>`;
+    b.onclick = () => goResult(e);
+    box.appendChild(b);
+  });
+}
+$('#searchIn').addEventListener('input', renderSearch);
+$('#searchIn').addEventListener('keydown', e => { if (e.key === 'Enter') { const r = search(e.target.value); if (r[0]) goResult(r[0]); } });
+
 // ---------------------------------------------------------------- boot
-buildPicker(); syncSettingsUI();
+buildPicker(); syncSettingsUI(); applyStyle();
 const hashId = decodeURIComponent((location.hash.match(/m=([^&]+)/) || [])[1] || '');
 const start = Math.max(0, models.findIndex(m => m.id === hashId));
 loadModel(start, { morph: false, announce: false });
