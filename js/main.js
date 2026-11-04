@@ -8,7 +8,8 @@ import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { MODELS } from './models.js';
 import { buildModel, TARGET_RADIUS } from './sampler.js';
 import { ParticleCloud } from './particles.js';
-import { HandTracker, POSES } from './gestures.js';
+import { HandTracker, POSES, MIRROR_OBJECTS } from './gestures.js';
+import { MirrorMode } from './mirror.js';
 import { fromJSON, from3DFile, fromImage, fromText } from './importers.js';
 
 THREE.ColorManagement.enabled = false; // colours in models are used as-is (sRGB look)
@@ -19,8 +20,9 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const isMobile = matchMedia('(pointer: coarse)').matches || /Android|iPhone|iPad/i.test(navigator.userAgent);
 
 // ---------------------------------------------------------------- settings
-const DEFAULTS = { style: 'real', focus: true, sound: true, calib: null, signHold: 450, extraSigns: true, autoPerf: true, particles: isMobile ? 70000 : 150000, bloom: !isMobile, trails: false, sensitivity: 'standard', colorMode: 'parts', autoRotate: true, animSpeed: 1, gestureRotate: true, voiceRate: 1 };
+const DEFAULTS = { style: 'real', focus: true, sound: true, calib: null, signHold: 450, extraSigns: false, autoPerf: true, v5: true, particles: isMobile ? 70000 : 150000, bloom: !isMobile, trails: false, sensitivity: 'standard', colorMode: 'parts', autoRotate: true, animSpeed: 1, gestureRotate: true, voiceRate: 1 };
 const settings = { ...DEFAULTS, ...safeJSON(localStorage.getItem('blaisevr:settings')) };
+if (!settings.v5) { settings.extraSigns = false; settings.v5 = true; }   // v5: simpler default gesture set
 function safeJSON(s) { try { return JSON.parse(s) || {}; } catch { return {}; } }
 function saveSettings() { try { localStorage.setItem('blaisevr:settings', JSON.stringify(settings)); } catch {} }
 
@@ -89,7 +91,7 @@ const S = {
   sel: -1, hover: -1, isolate: false, pulled: new Set(), pullAmt: [],
   rotY: 0.5, rotX: 0.15, velY: 0, rotXT: 0.15, zoom: 7.5, zoomT: 7.5,
   cutOn: false, cutAxis: 0, cutW: 0, cutWT: 0.0,
-  labels: false, anim: true, animTime: 0, time: 0, focus: new THREE.Vector3(),
+  labels: false, anim: true, animTime: 0, time: 0, focus: new THREE.Vector3(), pan: new THREE.Vector3(), hidden: new Set(),
   demo: false, quiz: null, recording: null, lastInput: performance.now(),
 };
 const cache = new Map();
@@ -116,7 +118,7 @@ function loadModel(i, { morph = true, announce = true } = {}) {
   let built;
   try { built = getBuilt(def); } catch (e) { toast('Could not build model: ' + e.message, 'err'); console.error(e); return; }
   S.built = built; cloud.setModel(built, morph && S.summoned); requestAO(built);
-  S.userOff = built.parts.map(() => new THREE.Vector3()); S.offGoal = built.parts.map(() => new THREE.Vector3()); S.grab = null; if (game?.on) endGame(false);
+  S.userOff = built.parts.map(() => new THREE.Vector3()); S.offGoal = built.parts.map(() => new THREE.Vector3()); S.userRot = built.parts.map(() => new THREE.Quaternion()); S.hidden.clear(); S.grab = null; if (game?.on) endGame(false);
   if (settings.colorMode !== 'parts') cloud.setColorMode(settings.colorMode);
   S.sel = -1; S.hover = -1; S.isolate = false; S.pulled.clear(); S.pullAmt = built.parts.map(() => 0);
   computeStates();  // keep picking in sync with the new part list immediately
@@ -195,9 +197,10 @@ function computeStates() {
       tmpV.copy(p.explode).normalize().multiplyScalar(0.6).addScaledVector(camLocal, 1.6);
       s.t.addScaledVector(tmpV, easeInOut(S.pullAmt[i]));
     }
+    if (S.userRot) s.q.premultiply(S.userRot[i]);
     if (S.grab?.part !== i) S.userOff[i].lerp(S.offGoal[i], 0.12);
     s.t.add(S.userOff[i]);
-    s.hl = S.sel === i || S.grab?.part === i ? 2 : S.hover === i ? 1 : 0;
+    s.hl = S.hidden.has(i) ? 3 : S.sel === i || S.grab?.part === i ? 2 : S.hover === i ? 1 : 0;
   });
   return states;
 }
@@ -212,7 +215,7 @@ function pickAt(cx, cy) {
   let best = -1, bestZ = 9, near = -1, nearD = 48 * 48;
   for (const i of cloud.pickIdx) {
     const pi = cloud.transformPoint(i, states, proj);
-    if (S.isolate && pi !== S.sel) continue;
+    if ((S.isolate && pi !== S.sel) || S.hidden.has(pi)) continue;
     if (S.cutOn && proj.dot(cutN) > S.cutW) continue;
     proj.applyMatrix4(mw).project(camera);
     if (proj.z > 1) continue;
@@ -265,6 +268,7 @@ let last = performance.now(), frame = 0;
 renderer.setAnimationLoop(loop);
 function loop() {
   const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000); last = now; frame++;
+  if (mirror.on) { S.time += dt; mirror.update(dt, S.time); perf.frames++; composer.render(); return; }
   S.time += dt; if (S.anim) S.animTime += dt * settings.animSpeed;
   S.form += (S.formT - S.form) * Math.min(1, dt * (S.formT > S.form ? 1.6 : 2.4));
   S.explode += (S.explodeT - S.explode) * Math.min(1, dt * 5);
@@ -278,7 +282,7 @@ function loop() {
 
   if (!dragging) { S.rotY += (S.velY + (settings.autoRotate && !S.cutOn && S.sel < 0 ? 0.18 : 0)) * dt; S.velY *= Math.pow(0.12, dt); }
   S.rotX += (S.rotXT - S.rotX) * Math.min(1, dt * 4);
-  pivot.rotation.set(S.rotX, S.rotY, 0);
+  pivot.rotation.set(S.rotX, S.rotY, 0); if (!renderer.xr.isPresenting) pivot.position.copy(S.pan);
   const focusing = settings.focus && S.sel >= 0 && S.form > 0.8;
   if (!renderer.xr.isPresenting) { camera.position.set(0, 0.3, S.zoom * (1 + 0.28 * S.explode) * Math.max(1, 0.8 / camera.aspect) * (focusing ? 0.78 : 1)); camera.lookAt(0, 0, 0); }
   pivot.updateMatrixWorld();
@@ -289,7 +293,7 @@ function loop() {
     const ft = proj.set(0, 0, 0);
     if (focusing) { const p = S.built.parts[S.sel], s = states[S.sel]; ft.copy(p.centroid).sub(s.pivot).multiplyScalar(s.scale).applyQuaternion(s.q).add(s.pivot).add(s.t).multiplyScalar(-0.85); }
     S.focus.lerp(ft, Math.min(1, dt * 3)); cloud.group.position.copy(S.focus);
-    if (frame % 3 === 0 && pointer.inside && !dragging && !handCursor.active && !tracker.running) S.hover = pickAt(pointer.x, pointer.y);
+    if (frame % 3 === 0 && pointer.inside && !dragging && !handCursor.active && !(tracker.running && G.handsSeen)) { S.hover = pickAt(pointer.x, pointer.y); updateHoverTip(); }
     updateLabels();
   }
   if (S.demo) demoStep(dt);
@@ -298,54 +302,105 @@ function loop() {
 }
 
 // ---------------------------------------------------------------- mouse / touch
+// Left-drag a part = move it · left-drag empty space = rotate · right-drag = rotate · middle-drag = pan
+// Alt+drag a part = spin that part · scroll = explode (while holding a part: closer/further) · Ctrl+scroll = zoom
+// Double-click = pull out · right-click a part = part menu · touch: drag part = move, long-press = menu, pinch = zoom
 const pointer = { x: 0, y: 0, inside: false };
-let dragging = false, downAt = null, lastP = null, touches = new Map(), pinchStart = null;
+let dragging = false, downAt = null, lastP = null, touches = new Map(), pinchStart = null, dragMode = null, ctxTimer = null;
 const cv = renderer.domElement;
-let longPress = null;
 cv.addEventListener('pointerdown', e => {
   cv.setPointerCapture(e.pointerId); touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  downAt = { x: e.clientX, y: e.clientY, t: performance.now() }; lastP = { ...downAt }; dragging = false; activity(); sfx.unlock();
-  clearTimeout(longPress);
-  if (touches.size === 2) { const [a, b] = [...touches.values()]; pinchStart = { d: Math.hypot(a.x - b.x, a.y - b.y), z: S.zoomT }; endGrab(); return; }
-  if (!S.summoned || S.form < 0.8) return;
-  const p = pickAt(e.clientX, e.clientY);
-  if (p < 0) return;
-  // Shift / Rebuild game = grab at once; otherwise press and hold ~0.35 s on a part to pick it up
-  if (e.shiftKey || game.on || e.button === 2) startGrab(p, e.clientX, e.clientY, 'mouse');
-  else longPress = setTimeout(() => { if (downAt && !dragging) { startGrab(p, downAt.x, downAt.y, 'mouse'); if (navigator.vibrate) navigator.vibrate(15); } }, 350);
+  downAt = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button, part: -1 }; lastP = { ...downAt }; dragging = false; activity(); sfx.unlock(); hideCtx();
+  clearTimeout(ctxTimer);
+  if (mirror.on) { dragMode = 'none'; return; }
+  if (touches.size === 2) { const [a, b] = [...touches.values()]; pinchStart = { d: Math.hypot(a.x - b.x, a.y - b.y), z: S.zoomT }; endGrab(); dragMode = 'pinch'; return; }
+  const p = S.summoned && S.form > 0.8 ? pickAt(e.clientX, e.clientY) : -1;
+  downAt.part = p;
+  if (e.button === 1) dragMode = 'pan';
+  else if (e.button === 2) dragMode = 'rotate';
+  else if (p >= 0) dragMode = e.altKey ? 'spin' : 'part';
+  else dragMode = 'rotate';
+  if (e.pointerType === 'touch' && p >= 0) ctxTimer = setTimeout(() => { if (downAt && !dragging) { if (navigator.vibrate) navigator.vibrate(15); showCtx(p, downAt.x, downAt.y); downAt = null; } }, 550);
 });
-cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  if (mirror.on || (downAt && dragging)) return;
+  const p = pickAt(e.clientX, e.clientY); if (p >= 0) showCtx(p, e.clientX, e.clientY);
+});
+const spinQ = new THREE.Quaternion(), spinAx = new THREE.Vector3();
 cv.addEventListener('pointermove', e => {
   pointer.x = e.clientX; pointer.y = e.clientY; pointer.inside = true;
   if (touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (touches.size === 2 && pinchStart) { const [a, b] = [...touches.values()]; S.zoomT = clamp(pinchStart.z * pinchStart.d / Math.hypot(a.x - b.x, a.y - b.y), 3, 16); dragging = true; return; }
-  if (S.cutOn && !S.autoCut && !downAt) S.cutWT = (e.clientX / innerWidth * 2 - 1) * -TARGET_RADIUS * 1.05;
-  if (!downAt) return;
-  if (S.grab?.mode === 'mouse') { moveGrab(e.clientX, e.clientY, 1); dragging = true; return; }
+  if (!downAt) { updateHoverTip(); return; }
   const dx = e.clientX - lastP.x, dy = e.clientY - lastP.y;
-  if (Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 5) { dragging = true; clearTimeout(longPress); }
-  if (dragging) { S.rotY += dx * 0.008; S.velY = dx * 0.5; S.rotXT = clamp(S.rotXT + dy * 0.006, -1.3, 1.3); S.rotX = S.rotXT; }
+  if (!dragging && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 5) {
+    dragging = true; clearTimeout(ctxTimer); hideHoverTip();
+    if (dragMode === 'part') startGrab(downAt.part, downAt.x, downAt.y, 'mouse');
+  }
+  if (dragging) {
+    if (dragMode === 'part' && S.grab) moveGrab(e.clientX, e.clientY, 1);
+    else if (dragMode === 'spin' && downAt.part >= 0) {
+      // rotate just this part, around the screen axes
+      camera.matrixWorld.extractBasis(camRight, camUp, camFwd); cloud.points.getWorldQuaternion(invQ).invert();
+      spinQ.setFromAxisAngle(spinAx.copy(camUp).applyQuaternion(invQ).normalize(), dx * 0.012); S.userRot[downAt.part].premultiply(spinQ);
+      spinQ.setFromAxisAngle(spinAx.copy(camRight).applyQuaternion(invQ).normalize(), dy * 0.012); S.userRot[downAt.part].premultiply(spinQ);
+      select(downAt.part);
+    } else if (dragMode === 'pan') {
+      const wpp = 2 * camera.position.length() * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / innerHeight;
+      camera.matrixWorld.extractBasis(camRight, camUp, camFwd);
+      S.pan.addScaledVector(camRight, dx * wpp).addScaledVector(camUp, -dy * wpp);
+    } else if (dragMode === 'rotate') { S.rotY += dx * 0.008; S.velY = dx * 0.5; S.rotXT = clamp(S.rotXT + dy * 0.006, -1.3, 1.3); S.rotX = S.rotXT; }
+  }
   lastP = { x: e.clientX, y: e.clientY };
 });
 const endPtr = e => {
-  touches.delete(e.pointerId); if (touches.size < 2) pinchStart = null; clearTimeout(longPress);
-  if (S.grab?.mode === 'mouse') { endGrab(); downAt = null; setTimeout(() => dragging = false, 0); return; }
-  if (downAt && !dragging && touches.size === 0) {
+  touches.delete(e.pointerId); if (touches.size < 2) pinchStart = null; clearTimeout(ctxTimer);
+  if (S.grab?.mode === 'mouse') endGrab();
+  else if (downAt && !dragging && touches.size === 0 && downAt.button === 0 && !mirror.on) {
     if (!S.summoned) summon();
-    else { const p = pickAt(e.clientX, e.clientY); if (p >= 0) { select(p === S.sel ? -1 : p, { speak: false }); sfx.select(); } else select(-1); }
+    else { const p = pickAt(e.clientX, e.clientY); if (p >= 0) { if (e.altKey) { select(p); S.isolate = !S.isolate; updateInfo(); } else select(p === S.sel ? -1 : p, { speak: false }); sfx.select(); } else select(-1); }
   }
-  if (touches.size === 0) { downAt = null; setTimeout(() => dragging = false, 0); }
+  if (touches.size === 0) { downAt = null; dragMode = null; setTimeout(() => dragging = false, 0); }
 };
 cv.addEventListener('pointerup', endPtr); cv.addEventListener('pointercancel', endPtr);
-cv.addEventListener('pointerleave', () => { pointer.inside = false; S.hover = -1; });
-cv.addEventListener('dblclick', e => { const p = pickAt(e.clientX, e.clientY); if (p >= 0) togglePull(p); });
+cv.addEventListener('pointerleave', () => { pointer.inside = false; S.hover = -1; hideHoverTip(); });
+cv.addEventListener('dblclick', e => { if (mirror.on) return; const p = pickAt(e.clientX, e.clientY); if (p >= 0) { togglePull(p); sfx.select(); } });
 cv.addEventListener('wheel', e => {
-  e.preventDefault(); activity();
+  e.preventDefault(); activity(); if (mirror.on) return;
   if (e.ctrlKey || e.metaKey) S.zoomT = clamp(S.zoomT * (1 + e.deltaY * 0.01), 3, 16);
   else if (e.shiftKey) S.zoomT = clamp(S.zoomT * (1 + e.deltaY * 0.0015), 3, 16);
   else if (S.grab) { S.grab.depth = (S.grab.depth || 0) - e.deltaY * 0.003; moveGrab(S.grab.lastX, S.grab.lastY, 1); }
   else setExplode(S.explodeT - e.deltaY * 0.0012);
 }, { passive: false });
+
+// hover tooltip (mouse)
+function updateHoverTip() {
+  const tip = $('#hoverTip'); if (mirror.on || !S.built || S.hover < 0 || handCursor.active) { tip.hidden = true; return; }
+  tip.hidden = false; tip.textContent = S.built.parts[S.hover].name;
+  tip.style.transform = `translate(${pointer.x + 14}px, ${pointer.y + 16}px)`;
+}
+const hideHoverTip = () => { $('#hoverTip').hidden = true; };
+
+// right-click / long-press part menu
+function showCtx(i, x, y) {
+  const p = S.built?.parts[i]; if (!p) return;
+  select(i); const m = $('#ctxMenu');
+  const items = [
+    ['🔊 Explain', () => speakPart(i)],
+    [S.pulled.has(i) ? '↩ Put back' : '↗ Pull out', () => togglePull(i)],
+    [S.isolate && S.sel === i ? '◎ Show all' : '◎ Isolate', () => { select(i); S.isolate = !(S.isolate && S.sel === i); updateInfo(); }],
+    ['🙈 Hide this part', () => { S.hidden.add(i); select(-1); toast(`Hidden: ${p.name} — right-click empty space or press F to show all`); }],
+    ['↺ Reset this part', () => { S.offGoal[i].set(0, 0, 0); S.userRot[i].identity(); S.pulled.delete(i); }],
+  ];
+  if (S.hidden.size) items.push([`👁 Show ${S.hidden.size} hidden`, () => S.hidden.clear()]);
+  items.push(['♻️ Reassemble all', () => reassemble()]);
+  m.innerHTML = `<b>${escapeHTML(p.name)}</b>`; items.forEach(([t, fn]) => { const b = document.createElement('button'); b.textContent = t; b.onclick = () => { hideCtx(); fn(); sfx.select(); }; m.appendChild(b); });
+  m.hidden = false; const r = m.getBoundingClientRect();
+  m.style.left = Math.min(x, innerWidth - r.width - 8) + 'px'; m.style.top = Math.min(y, innerHeight - r.height - 8) + 'px';
+}
+function hideCtx() { $('#ctxMenu').hidden = true; }
+document.addEventListener('pointerdown', e => { if (!e.target.closest('#ctxMenu')) hideCtx(); }, true);
 
 // ---------------------------------------------------------------- grabbing & moving parts (mouse, touch and hand)
 const camRight = new THREE.Vector3(), camUp = new THREE.Vector3(), camFwd = new THREE.Vector3(), invQ = new THREE.Quaternion(), dWorld = new THREE.Vector3();
@@ -387,12 +442,12 @@ function endGrab() {
 }
 function reassemble(announce = true) {
   if (!S.built) return;
-  S.grab = null; S.pulled.clear(); S.offGoal.forEach(v => v.set(0, 0, 0)); S.isolate = false;
+  S.grab = null; S.pulled.clear(); S.offGoal.forEach(v => v.set(0, 0, 0)); S.userRot?.forEach(q => q.identity()); S.hidden.clear(); S.isolate = false;
   if (!S.summoned) summon(); setExplode(0); select(-1); sfx.whoosh(false);
   if (game.on) endGame(false);
   if (announce) flash('♻️ Reassembled');
 }
-const anyMoved = () => S.userOff?.some(v => v.lengthSq() > 0.0004) || S.offGoal?.some(v => v.lengthSq() > 0.0004);
+const anyMoved = () => S.userOff?.some(v => v.lengthSq() > 0.0004) || S.offGoal?.some(v => v.lengthSq() > 0.0004) || S.userRot?.some(q => Math.abs(q.w) < 0.9999);
 
 // ---------------------------------------------------------------- 🧩 Rebuild game: put the model back together
 const game = { on: false, placed: new Set(), todo: [], start: 0, timer: null, hints: 0 };
@@ -487,14 +542,14 @@ const sfx = (() => {
 
 // ---------------------------------------------------------------- keyboard
 const KEYS = {
-  ' ': toggleSummon, f: () => reassemble(), j: () => game.on ? endGame(true) : startRebuild(), o: () => setExplode(S.explodeT > 0.5 ? 0 : 1), e: () => setExplode(S.explodeT > 0.5 ? 0 : 1),
+  w: () => toggleMirror(), ' ': toggleSummon, f: () => reassemble(), j: () => game.on ? endGame(true) : startRebuild(), o: () => setExplode(S.explodeT > 0.5 ? 0 : 1), e: () => setExplode(S.explodeT > 0.5 ? 0 : 1),
   v: next, arrowright: next, arrowleft: prev, arrowup: () => setExplode(S.explodeT + 0.1), arrowdown: () => setExplode(S.explodeT - 0.1),
   b: () => togglePicker(), g: () => toggleSetting('gestureRotate', 'Hand rotate'), x: () => toggleCut(), ',': () => cycleCutAxis(-1), '.': () => cycleCutAxis(1),
   r: () => { toggleSetting('autoRotate', 'Auto-rotate'); }, l: () => { S.labels = !S.labels; btnState('labels', S.labels); }, t: () => { toggleSetting('trails', 'Trails'); applyFx(); },
   s: () => cycleStyle(), y: () => toggleTour(), '/': () => openSearch(), a: () => { S.anim = !S.anim; cloud.setFlowOn(S.anim); btnState('anim', S.anim); toast(S.anim ? 'Animation & flows on' : 'Animation paused'); },
   q: () => S.quiz ? endQuiz(true) : startQuiz(), m: () => toggleVoice(), k: () => toggleRecord(), i: () => speakPart(S.sel), c: () => toggleCamera(), d: () => toggleDemo(),
   h: () => toggleDlg('#help'), '?': () => toggleDlg('#help'), n: () => openText(), u: () => $('#file').click(), p: () => screenshot(), z: () => toggleIsolate(),
-  '+': () => S.zoomT = clamp(S.zoomT * 0.85, 3, 16), '=': () => S.zoomT = clamp(S.zoomT * 0.85, 3, 16), '-': () => S.zoomT = clamp(S.zoomT * 1.15, 3, 16), '0': () => { S.zoomT = 7.5; S.rotXT = 0.15; },
+  '+': () => S.zoomT = clamp(S.zoomT * 0.85, 3, 16), '=': () => S.zoomT = clamp(S.zoomT * 0.85, 3, 16), '-': () => S.zoomT = clamp(S.zoomT * 1.15, 3, 16), '0': () => { S.zoomT = 7.5; S.rotXT = 0.15; S.pan.set(0, 0, 0); },
   escape: () => { if (!closeDialogs()) { if (S.quiz) endQuiz(true); else select(-1); } },
 };
 addEventListener('keydown', e => {
@@ -549,7 +604,7 @@ function singleHand(h, cur) {
   if (showCursor) { cur.style.transform = `translate(${handCursor.x}px, ${handCursor.y}px)`; cur.classList.toggle('pinch', h.pose === 'pinch'); }
 
   // ---- command signs: hold to confirm
-  if (COMMANDS.includes(h.pose) && settings.extraSigns) {
+  if (h.pose === 'victory' || (COMMANDS.includes(h.pose) && settings.extraSigns)) {
     const prog = Math.min(1, h.holdMs / settings.signHold);
     signRing(h.pose, sl.fired === sl.since ? 1 : prog);
     if (prog >= 1 && sl.fired !== sl.since) { sl.fired = sl.since; runCommand(h.pose); }
@@ -584,14 +639,16 @@ function singleHand(h, cur) {
   sl.prevPalm = h.palm;
 }
 tracker.onFrame = (f) => { try { handleHands(f); } catch (err) { console.error('gesture handler', err); } };
-function handleHands({ hands, snap, swipe }) {
+function handleHands({ hands, snap, swipe, objects }) {
+  G.handsSeen = hands.length > 0;
+  if (mirror.on) { $('#handState').textContent = hands.length ? hands.map(h => (h.side === 'Left' ? 'L' : 'R')).join(' ') : 'no hand'; $('#camStatus').textContent = `${tracker.fps} fps · ${tracker.mode}${tracker.detMode ? ' · objects ' + tracker.detMode : ''}`; mirror.onVision({ hands, objects }); return; }
   const cur = $('#cursor');
   $('#handState').textContent = hands.length ? hands.map(h => (h.side === 'Left' ? 'L' : 'R') + (POSES[h.pose] || '')).join(' ') : 'no hand';
   $('#camStatus').textContent = `${tracker.fps} fps · ${tracker.mode}${tracker.light != null ? ' · light ' + (tracker.light < 0.18 ? 'low ⚠️' : 'ok') : ''}`;
   if (!hands.length) { signRing(null); handCursor.active = false; cur.hidden = true; G.two = null; if (S.grab?.mode === 'hand') endGrab(); Object.values(G.slots).forEach(s => { s.pose = null; s.count = 0; s.prevPalm = null; }); $('#gestureName').textContent = '—'; highlightGuide(null); return; }
   activity();
-  if (snap) { toggleSummon(); flash('🫰 Snap!'); sfx.whoosh(S.summoned); }
-  if (swipe && !S.grab && performance.now() - G.lastNav > 900) { G.lastNav = performance.now(); swipe === 'right' ? next() : prev(); flash(swipe === 'right' ? '👉 Next' : '👈 Previous'); sfx.whoosh(true); return; }
+  if (snap && settings.extraSigns) { toggleSummon(); flash('🫰 Snap!'); sfx.whoosh(S.summoned); }
+  if (swipe && settings.extraSigns && !S.grab && performance.now() - G.lastNav > 900) { G.lastNav = performance.now(); swipe === 'right' ? next() : prev(); flash(swipe === 'right' ? '👉 Next' : '👈 Previous'); sfx.whoosh(true); return; }
   if (hands.length >= 2) {
     const [a, b] = hands, act = hands.find(h => ['point', 'pinch', 'ok'].includes(h.pose)), other = hands.find(h => h !== act);
     // one hand points / grabs while the other (fist) rotates the model
@@ -613,9 +670,10 @@ function handleHands({ hands, snap, swipe }) {
   G.two = null;
   singleHand(hands[0], cur);
 }
+const CORE_GUIDE = [['✋', 'open', 'explode'], ['✊', 'fist', 'assemble · rotate'], ['☝️', 'point', 'select'], ['🤏', 'pinch', 'grab & move'], ['✌️', 'victory', 'next (hold)'], ['🙌', 'two', 'zoom']];
 const GUIDE = [['🫰', 'snap', 'summon'], ['✊', 'fist', 'form / rotate'], ['✋', 'open', 'explode'], ['☝️', 'point', 'select'], ['🤏', 'pinch', 'grab & move'], ['👌', 'ok', 'isolate'], ['👍', 'thumb', 'explain'], ['👎', 'thumbdown', 'reassemble'], ['✌️', 'victory', 'next'], ['3️⃣', 'three', 'cut-away'], ['🤘', 'rock', 'view'], ['🤙', 'shaka', 'tour'], ['👋', 'swipe', 'prev / next'], ['🙌', 'two', 'zoom · turn'], ['🤏🤏', 'two', 'pull apart']];
-$('#gestureGuide').innerHTML = GUIDE.map(([e, k, t]) => `<span data-pose="${k}"><b>${e}</b>${t}</span>`).join('');
 let lastGuide = null;
+function renderGuide() { $('#gestureGuide').innerHTML = (settings.extraSigns ? GUIDE : CORE_GUIDE).map(([e, k, t]) => `<span data-pose="${k}"><b>${e}</b>${t}</span>`).join(''); lastGuide = null; }
 function highlightGuide(p) { if (p === lastGuide) return; lastGuide = p; $$('#gestureGuide span').forEach(s => s.classList.toggle('on', s.dataset.pose === p || (p === 'partial' && s.dataset.pose === 'open'))); }
 
 // ---------------------------------------------------------------- adaptive performance while the camera is on
@@ -634,6 +692,32 @@ setInterval(() => {
     toast(`⚡ Lighter graphics so hand tracking stays smooth (was ${tracker.fps} fps). Change it in ⚙ Settings.`);
   }
 }, 1000);
+
+// ---------------------------------------------------------------- 🪞 Mirror Mode
+const mirror = new MirrorMode({ scene, camera, video: $('#camVideo'), overlay: $('#camOverlay'), toast, speak, sfx,
+  onStatus: msg => { $('#mirrorStatus').textContent = msg; const t = mirror.twin; $('#mirrorThumb').hidden = !t; if (t && $('#mirrorThumb').dataset.src !== t.crop) { $('#mirrorThumb').src = t.crop; $('#mirrorThumb').dataset.src = t.crop; }
+    $('#mirrorRefill').hidden = !t?.liquid; $('#mirrorCap').hidden = t?.kind !== 'bottle'; $('#mirrorCap').textContent = mirror.capOff ? '🧢 Close cap' : '🧢 Open cap'; } });
+$('#mirrorTarget').innerHTML = '<option value="auto">Any object</option>' + MIRROR_OBJECTS.map(o => `<option value="${o}">${o[0].toUpperCase() + o.slice(1)}</option>`).join('');
+async function toggleMirror(on = !mirror.on) {
+  if (on) {
+    if (S.quiz) endQuiz(true); if (tour.on) toggleTour(false); if (S.demo) toggleDemo(false); if (game.on) endGame(true);
+    if (!tracker.running) { await toggleCamera(true); if (!tracker.running) return; }
+    $('#mirrorPanel').hidden = false; $('#mirrorStatus').textContent = '⏳ Loading the object detector (first time ≈ 5 MB)…';
+    try { await tracker.enableObjects(); } catch (e) { console.error(e); $('#mirrorPanel').hidden = true; toast('Mirror Mode needs the object detector, which could not load: ' + e.message, 'err'); return; }
+    tracker.wantObjects = true;
+    document.body.classList.add('mirror'); pivot.visible = false; stars.visible = false; floorShadow.visible = floorRing.visible = false;
+    scene.background = studioBg; mirror.enter(); btnState('mirror', true); closeDialogs(); togglePicker(false);
+    speak('Mirror mode. Put an object, like a bottle of water, on the table where the camera can see it.');
+  } else {
+    tracker.wantObjects = false; mirror.exit(); document.body.classList.remove('mirror'); pivot.visible = true; $('#mirrorPanel').hidden = true; btnState('mirror', false); applyStyle();
+  }
+}
+$('#mirrorTarget').onchange = e => mirror.setTarget(e.target.value);
+$('#mirrorRecap').onclick = () => mirror.recapture();
+$('#mirrorRefill').onclick = () => mirror.refill();
+$('#mirrorCap').onclick = () => { mirror.capOff = !mirror.capOff; if (mirror.states?.[1]) mirror.states[1].hl = mirror.capOff ? 3 : 0; mirror.status(mirror.state); sfx.select(); };
+$('#mirrorHand').onchange = e => { mirror.showHand = e.target.checked; };
+$('#mirrorExit').onclick = () => toggleMirror(false);
 
 // ---------------------------------------------------------------- calibration wizard
 async function calibrate() {
@@ -833,7 +917,7 @@ function demoStep(dt) {
 function activity() { S.lastInput = performance.now(); }
 addEventListener('pointerdown', () => { if (S.demo) toggleDemo(false); }, true);
 addEventListener('keydown', e => { if (S.demo && e.key.toLowerCase() !== 'd') toggleDemo(false); }, true);
-setInterval(() => { if (!S.demo && !S.quiz && S.summoned && performance.now() - S.lastInput > 90000 && $('#welcome').hidden) toggleDemo(true); }, 5000);
+setInterval(() => { if (!S.demo && !S.quiz && !mirror.on && S.summoned && performance.now() - S.lastInput > 90000 && $('#welcome').hidden) toggleDemo(true); }, 5000);
 
 // ---------------------------------------------------------------- importing: drag & drop / file picker / text
 async function importFile(file) {
@@ -897,7 +981,7 @@ const ACTIONS = {
   cut: () => toggleCut(), anim: KEYS.a, labels: KEYS.l, style: cycleStyle, tour: () => toggleTour(), search: () => openSearch(), quiz: KEYS.q, voice: toggleVoice, record: toggleRecord, camera: () => toggleCamera(),
   help: () => toggleDlg('#help'), settings: () => toggleDlg('#settings'), browse: () => togglePicker(), text: openText, import: () => $('#file').click(),
   demo: () => toggleDemo(), shot: screenshot, share: share, speak: () => speakPart(S.sel), pull: () => togglePull(S.sel), isolate: toggleIsolate, closeInfo: () => select(-1),
-  closeDlg: () => closeDialogs(), rebuild: () => game.on ? endGame(true) : startRebuild(), reassemble: () => reassemble(), calibrate: () => calibrate(), sound: () => { settings.sound = !settings.sound; saveSettings(); btnState('sound', settings.sound); toast(settings.sound ? '🔊 Sound on' : '🔇 Sound off'); }, quizClose: () => endQuiz(true), colors: cycleColors,
+  closeDlg: () => closeDialogs(), mirror: () => toggleMirror(), rebuild: () => game.on ? endGame(true) : startRebuild(), reassemble: () => reassemble(), calibrate: () => calibrate(), sound: () => { settings.sound = !settings.sound; saveSettings(); btnState('sound', settings.sound); toast(settings.sound ? '🔊 Sound on' : '🔇 Sound off'); }, quizClose: () => endQuiz(true), colors: cycleColors,
 };
 document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (b && ACTIONS[b.dataset.act]) { activity(); ACTIONS[b.dataset.act](); } });
 $('#explode').addEventListener('input', e => setExplode(+e.target.value));
@@ -932,7 +1016,7 @@ $('#setAuto').onchange = e => { settings.autoRotate = e.target.checked; saveSett
 $('#setAnimSpeed').oninput = e => { settings.animSpeed = +e.target.value; saveSettings(); };
 $('#setHandRot').onchange = e => { settings.gestureRotate = e.target.checked; saveSettings(); };
 $('#setHold').oninput = e => { settings.signHold = +e.target.value; saveSettings(); $('#holdVal').textContent = (settings.signHold / 1000).toFixed(2) + ' s'; };
-$('#setExtra').onchange = e => { settings.extraSigns = e.target.checked; saveSettings(); };
+$('#setExtra').onchange = e => { settings.extraSigns = e.target.checked; saveSettings(); renderGuide(); };
 $('#setPerf').onchange = e => { settings.autoPerf = e.target.checked; saveSettings(); };
 $('#setReset').onclick = () => { localStorage.removeItem('blaisevr:custom'); localStorage.removeItem('blaisevr:settings'); location.reload(); };
 
@@ -1051,10 +1135,10 @@ $('#searchIn').addEventListener('input', renderSearch);
 $('#searchIn').addEventListener('keydown', e => { if (e.key === 'Enter') { const r = search(e.target.value); if (r[0]) goResult(r[0]); } });
 
 // ---------------------------------------------------------------- boot
-buildPicker(); syncSettingsUI(); applyStyle();
+buildPicker(); syncSettingsUI(); applyStyle(); renderGuide();
 const hashId = decodeURIComponent((location.hash.match(/m=([^&]+)/) || [])[1] || '');
 const start = Math.max(0, models.findIndex(m => m.id === hashId));
 loadModel(start, { morph: false, announce: false });
 setScene();
 if (new URLSearchParams(location.search).has('skip')) { $('#welcome').hidden = true; summon(); }
-window.BlaiseVR = { S, models, loadModel, summon, setExplode, select, startQuiz, addModel, fromText, settings, cloud, tracker, startRebuild, reassemble, startGrab, moveGrab, endGrab, game, pickAt, onFrame: (...a) => tracker.onFrame(...a) };
+window.BlaiseVR = { mirror, toggleMirror, S, models, loadModel, summon, setExplode, select, startQuiz, addModel, fromText, settings, cloud, tracker, startRebuild, reassemble, startGrab, moveGrab, endGrab, game, pickAt, onFrame: (...a) => tracker.onFrame(...a) };

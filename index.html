@@ -28,6 +28,8 @@
   <div id="labels"></div>
   <div id="cursor" hidden><span></span></div>
   <div id="flash"></div>
+  <div id="hoverTip" hidden></div>
+  <div id="ctxMenu" hidden></div>
   <div id="signRing" hidden><b></b><small></small></div>
 
   <!-- top HUD -->
@@ -46,7 +48,8 @@
 
   <!-- right toolbar -->
   <nav class="tools" aria-label="Controls">
-    <button data-act="snap" title="Snap — summon / dissolve (Space)">🫰<span>Snap</span></button>
+    <button data-act="mirror" title="Mirror Mode — a live twin of a real object (W)">🪞<span>Mirror Mode</span></button>
+    <button data-act="snap" title="Summon / dissolve (Space)">🫰<span>Summon</span></button>
     <button data-act="form" title="Form the model (F)">✊<span>Form</span></button>
     <button data-act="explodeBtn" title="Explode / assemble (E)">💥<span>Explode</span></button>
     <button data-act="reassemble" title="Reassemble everything (F · 👎)">♻️<span>Reassemble</span></button>
@@ -123,6 +126,14 @@
     <p id="quizQ"></p>
     <div id="quizOpts"></div>
   </div>
+  <div id="mirrorPanel" class="panel" hidden>
+    <div class="info-head"><div><small>MIRROR MODE</small><h2>🪞 Your digital twin</h2></div><button class="x" id="mirrorExit" aria-label="Exit Mirror Mode">✕</button></div>
+    <p id="mirrorStatus" class="mstatus">Starting…</p>
+    <div class="mrow"><img id="mirrorThumb" alt="Captured object" hidden /><div class="mtips">Put a bottle, cup, phone, book or fruit on the table. Pick it up, move it, tilt it to pour — the twin copies you.</div></div>
+    <label class="set">Object <select id="mirrorTarget"></select></label>
+    <label class="set chk"><input id="mirrorHand" type="checkbox" checked /> Show my hand</label>
+    <div class="row"><button id="mirrorRecap">📸 Re-capture</button><button id="mirrorCap" hidden>🧢 Open cap</button><button id="mirrorRefill" hidden>💧 Refill</button></div>
+  </div>
   <div id="gameBar" hidden><b id="gameText"></b><small id="gameTime"></small><div class="row"><button id="gameHint">💡 Hint (+10 s)</button><button id="gameStop">✕ Give up</button></div></div>
   <div id="gameDone" hidden></div>
   <div id="tourBar" hidden><small id="tourStep"></small><b id="tourText"></b><div class="row"><button id="tourPrev">⏮ Back</button><button id="tourNext">Next ⏭</button><button id="tourStop">✕ End tour</button></div></div>
@@ -137,6 +148,7 @@
         <div><span>🫰</span><b>Snap to summon</b><small>Snap your fingers and the particles appear. Make a fist to form the model.</small></div>
         <div><span>✋</span><b>Open to explode</b><small>The wider you open your hand, the further every part flies apart.</small></div>
         <div><span>🤏</span><b>Grab &amp; move</b><small>Point ☝️ to select, pinch and hold 🤏 to pick a part up and move it, 👎 to put everything back.</small></div>
+        <div><span>🪞</span><b>Mirror Mode</b><small>Put a bottle on your table: BlaiseVR makes a live 3D twin that moves, tilts and pours with you.</small></div>
         <div><span>🧩</span><b>Rebuild it</b><small>Play the Rebuild game: parts scatter and you put them back. Swipe 👋 or ✌️ for the next model.</small></div>
       </div>
       <div class="cta">
@@ -154,21 +166,22 @@
       <div class="help-grid">
         <div>
           <h3>Gestures</h3>
+          <p class="muted">Core: ✋ ✊ ☝️ 🤏 ✌️ 🙌. Faded rows are extra signs — switch them on in ⚙ Settings → Command signs.</p>
           <table>
-            <tr><td>🫰 Snap</td><td>Summon / dissolve</td></tr>
+            <tr class="extra"><td>🫰 Snap</td><td>Summon / dissolve</td></tr>
             <tr><td>✊ Fist (move it)</td><td>Form · grab-rotate the model</td></tr>
             <tr><td>✋ Open hand</td><td>Explode (openness = distance)</td></tr>
             <tr><td>☝️ Point &amp; hold</td><td>Select a part</td></tr>
             <tr><td>🤏 Pinch &amp; hold</td><td>Grab a part and move it (closer/further too)</td></tr>
-            <tr><td>🤏 Quick pinch</td><td>Pull part out / put back</td></tr>
-            <tr><td>👌 OK</td><td>Isolate pointed part (or labels)</td></tr>
-            <tr><td>👎 Thumbs down</td><td>Reassemble everything</td></tr>
-            <tr><td>3️⃣ Three fingers</td><td>Cut-away on/off</td></tr>
-            <tr><td>🤘 Rock</td><td>Change view (Realistic / Glow / X-ray)</td></tr>
-            <tr><td>🤙 Shaka</td><td>Guided tour</td></tr>
-            <tr><td>👋 Swipe</td><td>Previous / next model</td></tr>
+            <tr class="extra"><td>🤏 Quick pinch</td><td>Pull part out / put back</td></tr>
+            <tr class="extra"><td>👌 OK</td><td>Isolate pointed part (or labels)</td></tr>
+            <tr class="extra"><td>👎 Thumbs down</td><td>Reassemble everything</td></tr>
+            <tr class="extra"><td>3️⃣ Three fingers</td><td>Cut-away on/off</td></tr>
+            <tr class="extra"><td>🤘 Rock</td><td>Change view (Realistic / Glow / X-ray)</td></tr>
+            <tr class="extra"><td>🤙 Shaka</td><td>Guided tour</td></tr>
+            <tr class="extra"><td>👋 Swipe</td><td>Previous / next model</td></tr>
             <tr><td>🤏🤏 Pinch both hands</td><td>Pull the model apart</td></tr>
-            <tr><td>👍 Thumbs up</td><td>Explain selected part aloud</td></tr>
+            <tr class="extra"><td>👍 Thumbs up</td><td>Explain selected part aloud</td></tr>
             <tr><td>✌️ Peace</td><td>Next model</td></tr>
             <tr><td>🔄 Twist hand</td><td>Rotate · raise / lower to tilt</td></tr>
             <tr><td>🙌 Two hands</td><td>Zoom (distance) · turn (twist)</td></tr>
@@ -181,7 +194,12 @@
             <tr><td>Ctrl/⇧ + scroll, pinch</td><td>Zoom</td></tr>
             <tr><td>Click / tap</td><td>Select part</td></tr>
             <tr><td>Double-click</td><td>Pull part out</td></tr>
-            <tr><td>Hold on a part, Shift+drag, right-drag</td><td>Move the part · scroll = closer/further</td></tr>
+            <tr><td>Drag a part</td><td>Move it (scroll while dragging = closer/further)</td></tr>
+            <tr><td>Drag empty space · right-drag</td><td>Rotate the view</td></tr>
+            <tr><td>Alt + drag a part</td><td>Spin that part on its own</td></tr>
+            <tr><td>Middle-drag</td><td>Pan</td></tr>
+            <tr><td>Right-click a part</td><td>Part menu: explain, pull out, isolate, hide, reset</td></tr>
+            <tr><td>Alt + click</td><td>Isolate a part</td></tr>
           </table>
         </div>
         <div>
@@ -201,6 +219,7 @@
             <tr><td><kbd>Q</kbd> <kbd>M</kbd> <kbd>I</kbd></td><td>Quiz · voice commands · explain part</td></tr>
             <tr><td><kbd>K</kbd> <kbd>P</kbd></td><td>Record video · screenshot</td></tr>
             <tr><td><kbd>N</kbd> <kbd>U</kbd></td><td>Type text · import a file</td></tr>
+            <tr><td><kbd>W</kbd></td><td>🪞 Mirror Mode</td></tr>
             <tr><td><kbd>C</kbd> <kbd>D</kbd> <kbd>H</kbd></td><td>Camera · demo · help</td></tr>
             <tr><td><kbd>+</kbd> <kbd>-</kbd> <kbd>0</kbd></td><td>Zoom · reset view</td></tr>
           </table>

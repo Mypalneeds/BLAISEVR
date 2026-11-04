@@ -43,6 +43,24 @@ Hand tracking runs **on your device** (MediaPipe). Video never leaves your compu
 | 🪨 | Zuma Rock | The "Gateway to Abuja", with its famous face |
 | 🎭 | National Theatre, Lagos | Stylised FESTAC '77 landmark |
 
+The 16 most realistic models are shown by default. Add `?all` to the URL (for example `blaisevr.vercel.app/?all`) to also see the carbon atom, plant cell, transformer, wind turbine, drone, Zuma Rock and National Theatre.
+
+**🪞 Mirror Mode: a live twin of a real object (key W)**
+
+Put a bottle of water, a cup, a phone, a book or a piece of fruit on your table, turn on the camera and press 🪞.
+
+1. **It finds the object.** A free MediaPipe object detector runs on your device and recognises 20 everyday things: bottle, cup, glass, phone, book, apple, orange, banana, bowl, vase, remote, mouse and more.
+2. **It copies the object's real look.** It takes a snapshot and builds a 3D particle twin wearing the object's actual colours and label. Clear bottles become glass and coloured ones become plastic.
+3. **It mirrors you, live.**
+   - Slide the object and the twin slides.
+   - Lift it and the twin lifts, with its shadow fading as it rises.
+   - Move it closer or further and the twin follows (depth is estimated from size).
+   - Tilt it and the twin tilts. Tilt is read from the object's outline and stays continuous past 90° for pouring.
+4. **It follows your hand.** When your fingers cover the object, the twin moves with your hand, including twisting. Your hand also appears in the scene as a glowing virtual hand.
+5. **It simulates water.** Bottles, cups, glasses and bowls are filled with simulated water that stays level as you tilt and sloshes when you move quickly. Press 🧢 to open the cap, then tip the bottle past horizontal and water pours out of the mouth and puddles on the table. Press 💧 to refill.
+
+Limits: one webcam can't measure true depth, so forward and back movement is approximate. Spinning a round bottle on the spot isn't visible. Small actions like unscrewing the cap aren't detected, which is why there's a button for it.
+
 **Realistic rendering**
 
 - **Contact shadows.** Ambient occlusion is computed for every particle (in a background worker), so creases, joints and touching parts get darker, just like real objects.
@@ -60,9 +78,21 @@ Hand tracking runs **on your device** (MediaPipe). Video never leaves your compu
 - **🧩 Rebuild game (J).** Up to 12 parts fly off, and you put the model back together against the clock. Hints cost +10 seconds, and your best time is saved for each model.
 - **Pull apart with two hands.** Pinch with both hands and spread them to explode the model.
 
-**Smarter webcam and 15 hand signs**
+**Mouse first: take it apart by hand**
 
-- **Signs:** 🫰 snap (summon), ✊ fist (form, then move it to grab-rotate), ✋ open (explode by how wide your hand is), ☝️ point (select), 🤏 pinch (grab and move), 👌 OK (isolate a part), 👍 explain, 👎 reassemble, ✌️ next model, 3️⃣ three fingers (cut-away), 🤘 rock (switch view), 🤙 shaka (guided tour), 👋 swipe (previous/next), 🙌 two hands (zoom and turn), 🤏🤏 both pinching (pull apart). You can also point with one hand while rotating with a fist in the other.
+- **Drag a part** to pull it away. Drop it near its spot and it snaps back.
+- **Drag empty space** (or right-drag) to rotate the view. **Middle-drag** to pan.
+- **Alt + drag a part** to spin that part on its own. **Alt + click** to isolate it.
+- **Scroll** to explode. Scroll while holding a part to move it closer or further. Ctrl + scroll to zoom.
+- **Right-click a part** for a menu: explain, pull out, isolate, hide, reset. Long-press on touch screens.
+- **Double-click** to pull a part out. **F** puts everything back together.
+- A tooltip shows each part's name as you hover.
+
+**Smarter webcam and a simple, reliable gesture set**
+
+Six core gestures are on by default, so signs no longer conflict: ✋ explode, ✊ assemble and grab-rotate, ☝️ select, 🤏 grab and move, ✌️ next model (hold it), 🙌 zoom. The extra signs below can be switched on in ⚙ Settings → Command signs.
+
+- **Extra signs (optional):** 🫰 snap (summon), ✊ fist (form, then move it to grab-rotate), ✋ open (explode by how wide your hand is), ☝️ point (select), 🤏 pinch (grab and move), 👌 OK (isolate a part), 👍 explain, 👎 reassemble, ✌️ next model, 3️⃣ three fingers (cut-away), 🤘 rock (switch view), 🤙 shaka (guided tour), 👋 swipe (previous/next), 🙌 two hands (zoom and turn), 🤏🤏 both pinching (pull apart). You can also point with one hand while rotating with a fist in the other.
 - **Fast tracking.** Hand detection runs in a background Web Worker, so the 3D scene can't slow it down. If the browser can't do that, it falls back to the main thread. If tracking still drops below about 18 fps, BlaiseVR automatically lightens the graphics (toggle in ⚙ Settings). The camera panel shows the live FPS and which mode is running.
 - **No accidental commands.** Command signs (👌 👍 👎 ✌️ 3️⃣ 🤘 🤙) must be held for about 0.45 s, and a ring fills on screen to show it's confirming. Movement poses (✋ ✊ ☝️ 🤏) respond instantly. Voting is time-based, so behaviour is the same at 7 fps or 60 fps. You can change the hold time, or switch command signs off, in ⚙ Settings.
 - **Steady tracking.** One-Euro smoothing removes cursor jitter. Each sign must hold for a few frames before it counts, so it doesn't flicker. Pinches are easier to hold than to start.
@@ -151,7 +181,7 @@ Add `?skip` to the URL to jump straight past the welcome screen.
 | 🙌 Two hands | Zoom · turn | `+` `-`, ctrl+scroll, pinch |
 | 🤏🤏 Both pinching | Pull apart | scroll |
 
-More keys: `J` 🧩 Rebuild game · `/` ask · `Y` tour · `S` view (Realistic / Glow / X-ray) · `X` cut-away (`,` `.` change axis) · `Z` isolate · `L` labels · `A` animate · `R` auto-rotate · `G` hand-rotate · `T` trails · `Q` quiz · `M` voice · `K` record · `P` screenshot · `N` text · `U` import · `B` browse · `C` camera · `D` demo · `H` help.
+More keys: `W` 🪞 Mirror Mode · `J` 🧩 Rebuild game · `/` ask · `Y` tour · `S` view (Realistic / Glow / X-ray) · `X` cut-away (`,` `.` change axis) · `Z` isolate · `L` labels · `A` animate · `R` auto-rotate · `G` hand-rotate · `T` trails · `Q` quiz · `M` voice · `K` record · `P` screenshot · `N` text · `U` import · `B` browse · `C` camera · `D` demo · `H` help.
 
 If gestures feel unreliable, set **Sensitivity → More forgiving** in the camera panel. Good lighting and a plain background help.
 
@@ -184,7 +214,8 @@ js/models2.js       12 more models: eye, brain, lungs, digestive, flower, plant 
 js/gestures.js      MediaPipe Hand Landmarker (loaded only when you turn on the camera), 13-sign classifier,
                     One-Euro smoothing, pose voting, swipes, light/distance hints, calibration
 js/ao.js, aoWorker.js  Ambient-occlusion bake, run in a Web Worker
-js/handWorker.js    MediaPipe hand tracking in a Web Worker (keeps gestures responsive)
+js/handWorker.js    MediaPipe hand tracking + object detection in a Web Worker
+js/mirror.js        Mirror Mode: object capture, twin, pose mirroring, virtual hand, water physics
 js/importers.js     .json / .glb / .gltf / .obj / .stl / image / text → model
 sw.js               Offline cache (PWA)
 ```

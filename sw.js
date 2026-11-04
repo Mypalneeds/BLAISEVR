@@ -1,6 +1,6 @@
 // BlaiseVR service worker: cache-first so the app works offline after the first visit.
-const CACHE = 'blaisevr-v4';
-const CORE = ['./', './index.html', './css/style.css', './js/main.js', './js/models.js', './js/models2.js', './js/ao.js', './js/aoWorker.js', './js/handWorker.js', './js/sampler.js', './js/particles.js', './js/gestures.js', './js/importers.js', './assets/icon.svg', './manifest.webmanifest'];
+const CACHE = 'blaisevr-v5';
+const CORE = ['./', './index.html', './css/style.css', './js/main.js', './js/models.js', './js/models2.js', './js/ao.js', './js/aoWorker.js', './js/handWorker.js', './js/mirror.js', './js/sampler.js', './js/particles.js', './js/gestures.js', './js/importers.js', './assets/icon.svg', './manifest.webmanifest'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(CORE)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', e => {

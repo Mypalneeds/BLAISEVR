@@ -105,7 +105,7 @@ void main(){
   gl_Position = projectionMatrix * mv;
   float base = solidPass ? mix(uSize, uSolidSize * 1.22, f) * (0.85 + aRnd.z * 0.3) : uSize * (0.55 + aRnd.z) * (uPass > 1.5 ? 1.15 : 1.0);
   float sz = base * uPR * (st > 1.5 && uStyle < 0.5 ? 1.35 : 1.0) * mix(0.7, 1.0, f);
-  gl_PointSize = (vAlpha < 0.5 || bright < 0.01 || skip > 0.5) ? 0.0 : sz * (300.0 / max(0.1, -mv.z));
+  gl_PointSize = (vAlpha < 0.5 || bright < 0.01 || skip > 0.5 || st > 2.5) ? 0.0 : sz * (300.0 / max(0.1, -mv.z));
 }`;
 
 const frag = /* glsl */`

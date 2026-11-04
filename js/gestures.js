@@ -5,6 +5,8 @@
 const VISION_VER = '0.10.18';
 const VISION_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VISION_VER}`;
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+const DET_URL = 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite';
+export const MIRROR_OBJECTS = ['bottle', 'cup', 'wine glass', 'cell phone', 'book', 'apple', 'orange', 'banana', 'bowl', 'vase', 'remote', 'mouse', 'scissors', 'toothbrush', 'teddy bear', 'clock', 'laptop', 'keyboard', 'donut', 'sports ball'];
 
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, (a.z - b.z) * 0.5);
 export const CONNECTIONS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
@@ -20,7 +22,7 @@ export const POSES = {
 };
 
 // ---------- One-Euro filter: smooth when still, responsive when moving ----------
-class OneEuro {
+export class OneEuro {
   constructor(minCutoff = 1.4, beta = 0.04, dCutoff = 1) { this.mc = minCutoff; this.b = beta; this.dc = dCutoff; this.x = null; this.dx = 0; this.t = 0; }
   static a(cut, dt) { const r = 2 * Math.PI * cut * dt; return r / (r + 1); }
   f(v, t) {
@@ -106,10 +108,26 @@ export class HandTracker {
         if (d.type === 'ready') { clearTimeout(to); this.worker = w; this.mode = 'worker · ' + d.delegate; resolve(); }
         else if (d.type === 'error') { clearTimeout(to); w.terminate(); reject(new Error(d.message)); }
         else if (d.type === 'result') { this._busy = false; if (this.running) this._process(d, performance.now()); }
+        else if (d.type === 'detReady') { this.objects = true; this.detMode = d.delegate; this._detRes?.(); }
+        else if (d.type === 'detError') { this._detRej?.(new Error(d.message)); }
       };
       w.onerror = e => { clearTimeout(to); reject(new Error(e.message || 'worker error')); };
       w.postMessage({ type: 'init', url: VISION_URL, model: MODEL_URL });
     });
+  }
+  // load the everyday-object detector (used by Mirror Mode) — once, on demand
+  async enableObjects() {
+    if (this.objects) return;
+    if (this.worker) {
+      await new Promise((res, rej) => { this._detRes = res; this._detRej = rej; this.worker.postMessage({ type: 'initDetector', model: DET_URL, allow: MIRROR_OBJECTS }); });
+    } else {
+      const vision = await import(/* @vite-ignore */ `${VISION_URL}/vision_bundle.mjs`);
+      const fileset = await vision.FilesetResolver.forVisionTasks(`${VISION_URL}/wasm`);
+      const opts = d => ({ baseOptions: { modelAssetPath: DET_URL, delegate: d }, runningMode: 'VIDEO', scoreThreshold: 0.3, maxResults: 4, categoryAllowlist: MIRROR_OBJECTS });
+      try { this.detector = await vision.ObjectDetector.createFromOptions(fileset, opts('GPU')); this.detMode = 'GPU'; }
+      catch { this.detector = await vision.ObjectDetector.createFromOptions(fileset, opts('CPU')); this.detMode = 'CPU'; }
+      this.objects = true;
+    }
   }
   stop() {
     this.running = false;
@@ -129,11 +147,16 @@ export class HandTracker {
     if (now - this._lastLight > 2000) this._checkLight(now);
     if (this.worker) {
       this._busy = true; this._sentAt = now;
-      try { const frame = await createImageBitmap(v); this.worker.postMessage({ type: 'frame', frame, ts: now }, [frame]); }
+      try { const frame = await createImageBitmap(v); this.worker.postMessage({ type: 'frame', frame, ts: now, detect: !!(this.objects && this.wantObjects) }, [frame]); }
       catch { this._busy = false; }
       this._sentAt = now;
     } else if (this.landmarker) {
       let res; try { res = this.landmarker.detectForVideo(v, now); } catch { return; }
+      if (this.detector && this.wantObjects) {
+        try { const r = this.detector.detectForVideo(v, now + 0.01), W = v.videoWidth, H = v.videoHeight;
+          res = { ...res, objects: (r.detections || []).filter(o => o.boundingBox).map(o => ({ label: o.categories[0].categoryName, score: o.categories[0].score, x: o.boundingBox.originX / W, y: o.boundingBox.originY / H, w: o.boundingBox.width / W, h: o.boundingBox.height / H })) };
+        } catch {}
+      }
       this._process(res, now);
     }
   }
@@ -185,7 +208,7 @@ export class HandTracker {
     } else if (now - this._noHandSince > 12000) this._hint('nohand', '👋 Raise your hand in front of the camera — snap 🫰 or make a fist ✊ to start', 20000);
 
     this._draw(hands);
-    this.onFrame({ hands, snap, swipe, t: now });
+    this.onFrame({ hands, snap, swipe, t: now, objects: res.objects || [] });
   }
   _draw(hands) {
     const c = this.ctx; if (!c) return;

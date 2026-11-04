@@ -421,4 +421,8 @@ tune(turbine, { '*': { mat: 'plastic' }, 'Gearbox': { mat: 'metal' }, 'Main Shaf
 tune(drone, { '*': { mat: 'plastic' }, 'Motors': { mat: 'metal' }, 'Camera Gimbal': { mat: 'metal' }, 'Landing Gear': { mat: 'rubber' } });
 tune(theatre, { '*': { mat: 'matte' }, 'Main Hall Walls': { mat: 'glass' }, 'Crown': { mat: 'plastic' }, 'Roof Canopy': { mat: 'plastic' } });
 
-export const MODELS = [heart, engine, generator, cell, dna, earth, solar, atom, turbine, drone, theatre, ...MORE_MODELS];
+const ALL = [heart, engine, generator, cell, dna, earth, solar, atom, turbine, drone, theatre, ...MORE_MODELS];
+// The 16 most realistic models are shown by default; add ?all to the URL to see all 23.
+const FEATURED = ['heart', 'eye', 'brain', 'lungs', 'digestive', 'cell', 'flower', 'dna', 'engine', 'generator', 'okada', 'danfo', 'phone', 'volcano', 'earth', 'solar'];
+const showAll = typeof location !== 'undefined' && /[?&]all\b/.test(location.search);
+export const MODELS = showAll ? ALL : FEATURED.map(id => ALL.find(m => m.id === id)).filter(Boolean);
