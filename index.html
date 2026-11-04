@@ -40,6 +40,7 @@
       <p id="modelMeta"></p>
     </div>
     <div class="chips">
+      <span class="chip"><i>speed</i><em id="perfState">—</em></span>
       <span class="chip"><i>scene</i><em id="sceneState">dissolved</em></span>
       <span class="chip"><i>hand</i><em id="handState">off</em></span>
       <span class="chip"><i>gesture</i><em id="gestureName">—</em></span>
@@ -238,6 +239,9 @@
         <select id="setStyle"><option value="real">Realistic (lit solid surfaces)</option><option value="glow">Glow (particles of light)</option><option value="xray">X-ray (see inside)</option></select>
       </label>
       <label class="set chk"><input id="setFocus" type="checkbox" /> Camera follows the selected part</label>
+      <label class="set">Quality
+        <select id="setQuality"><option value="auto">Auto (recommended)</option><option value="beautiful">Beautiful — 150k, strong GPU</option><option value="balanced">Balanced — 100k</option><option value="fast">Fast — 60k</option><option value="fastest">Fastest — 35k, old devices</option><option value="custom">Custom</option></select>
+      </label>
       <label class="set">Particles
         <select id="setParticles"><option value="40000">40k — old phones</option><option value="70000">70k — phones</option><option value="120000">120k</option><option value="150000">150k — laptops</option><option value="250000">250k — gaming PCs</option></select>
       </label>

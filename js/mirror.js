@@ -5,7 +5,6 @@
 import * as THREE from 'three';
 import { ParticleCloud } from './particles.js';
 import { buildModel, sampleShape } from './sampler.js';
-import { bakeAO } from './ao.js';
 import { OneEuro, CONNECTIONS } from './gestures.js';
 
 const W = 8, H = 6;                       // scene units covered by the camera image (4:3)
@@ -203,7 +202,6 @@ export class MirrorMode {
     this.objH = box.h * H;
     const R0 = clamp(aspect, 0.15, 2.5) * 0.5, area = (2 * Math.PI * R0 + 2 * Math.PI * R0 * R0 + (T.slab ? 2 * R0 : 0)) * this.objH * this.objH;
     built.solidSize = Math.sqrt(area / TWIN_N) * 4.2;
-    built.ao = bakeAO(built.positions, built.normals, built.N); built.aoDone = true;
     this.cloud.setModel(built, false); this.cloud.group.visible = true;
     // template space → normalised space used by the particle cloud
     this.cloud.group.scale.setScalar(1 / built.scale); this.cloud.group.position.copy(built.center);
@@ -228,16 +226,17 @@ export class MirrorMode {
     p.needsUpdate = true; this.liquid.visible = true; this.liqU.uSize.value = 0.05;
   }
   // ---------------- every vision frame ----------------
-  onVision({ hands = [], objects = [] }, now = performance.now()) {
+  onVision({ hands = [], objects = null }, now = performance.now()) {
     if (!this.on) return;
     this.hands = hands;
+    if (objects === null) { this._handFollow(hands, now); this._drawOverlay(this.lastObjects || [], this.lastDet); return; }   // detector skipped this frame (it runs every 3rd) — hands only
     const want = o => this.target === 'auto' ? true : o.label === this.target;
     let cands = objects.filter(o => want(o) && o.score > 0.35);
     if (this.twin) cands = cands.filter(o => o.label === this.twin.kind);
     // pick the detection closest to where the twin was
     const last = this.lastBox;
     const det = cands.sort((a, b) => last ? Math.hypot(a.x + a.w / 2 - last.cx, a.y + a.h / 2 - last.cy) - Math.hypot(b.x + b.w / 2 - last.cx, b.y + b.h / 2 - last.cy) : b.score - a.score)[0];
-    this._drawOverlay(objects, det);
+    this.lastObjects = objects; this.lastDet = det; this._drawOverlay(objects, det);
     const hand = hands[0];
     const handPt = hand ? { x: toX(hand.palm.x), y: toY(hand.palm.y) } : null;
 
@@ -265,6 +264,11 @@ export class MirrorMode {
       this.target3 = { ...this.target3, x: handPt.x + this.handOff.x, y: handPt.y + this.handOff.y, tilt: this.handOff.tilt - (hand.roll - this.handOff.roll) * 1.2 };
       this.status('held');
     } else if (now - this.lastSeen > 1500) { this.holding = false; this.status('lost'); }
+  }
+  // between detector frames: while held, keep the twin glued to the hand
+  _handFollow(hands, now) {
+    const hand = hands[0]; if (!this.twin || !this.holding || !hand || !this.handOff) return;
+    this.target3 = { ...this.target3, x: toX(hand.palm.x) + this.handOff.x, y: toY(hand.palm.y) + this.handOff.y };
   }
   _drawOverlay(objects, det) {
     const c = this.overlay?.getContext('2d'); if (!c) return;

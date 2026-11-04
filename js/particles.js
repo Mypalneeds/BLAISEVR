@@ -152,7 +152,7 @@ export class ParticleCloud {
   }
   _allocate(N) {
     this.N = N;
-    if (this.points) { this.group.remove(this.points, this.glassPoints); this.geometry.dispose(); }
+    if (this.points) { this.group.remove(this.points, this.glassPoints); this.geometry.dispose(); this.glassGeometry?.dispose(); }
     const g = new THREE.BufferGeometry();
     this.pos = new Float32Array(N * 3); this.prev = new Float32Array(N * 3);
     this.partAttr = new Float32Array(N); this.color = new Float32Array(N * 3);
@@ -172,7 +172,10 @@ export class ParticleCloud {
     this.geometry = g;
     this.points = new THREE.Points(g, this.material);
     this.points.frustumCulled = false;
-    this.glassPoints = new THREE.Points(g, this.glassMaterial);
+    const gg = new THREE.BufferGeometry();   // same attribute buffers, its own draw range
+    for (const [k, v] of Object.entries(g.attributes)) gg.setAttribute(k, v);
+    gg.boundingSphere = g.boundingSphere; this.glassGeometry = gg;
+    this.glassPoints = new THREE.Points(gg, this.glassMaterial);
     this.glassPoints.frustumCulled = false; this.glassPoints.renderOrder = 2;
     this.glassPoints.visible = this.uniforms.uStyle.value === 1;
     this.group.add(this.points, this.glassPoints);
@@ -186,7 +189,7 @@ export class ParticleCloud {
     this.baseColors = model.colors; this.color.set(model.colors);
     this.normal.set(model.normals); this.flow.set(model.flow); this.mat.set(model.mat); this.ao.set(model.ao);
     for (const k of ['position', 'aPrev', 'aPart', 'aColor', 'aNormal', 'aFlow', 'aMat', 'aAO']) this.geometry.getAttribute(k).needsUpdate = true;
-    this.model = model;
+    this.model = model; this._ranges();
     this.uniforms.uGain.value = model.gain ?? 1;
     this.uniforms.uSolidSize.value = model.solidSize ?? 0.08;
     this.uniforms.uMorph.value = morph ? 0 : 1;
@@ -212,10 +215,17 @@ export class ParticleCloud {
     this.geometry.getAttribute('aColor').needsUpdate = true;
   }
   // 'glow' | 'real' | 'xray'
+  _ranges() {
+    const N = this.N, gs = this.model?.glassStart ?? N, solid = this.uniforms.uStyle.value === 1;
+    this.geometry.setDrawRange(0, solid ? gs : N);
+    this.glassGeometry?.setDrawRange(gs, N - gs);
+    if (this.glassPoints) this.glassPoints.visible = solid && gs < N;
+  }
+  setPixelRatio(pr) { this.uniforms.uPR.value = pr; }
   setStyle(style) {
     const solid = style === 'real';
     this.uniforms.uStyle.value = style === 'real' ? 1 : style === 'xray' ? 2 : 0;
-    this.uniforms.uPass.value = solid ? 1 : 0; if (this.glassPoints) this.glassPoints.visible = solid;
+    this.uniforms.uPass.value = solid ? 1 : 0; this._ranges();
     this.material.blending = solid ? THREE.NormalBlending : THREE.AdditiveBlending;
     this.material.depthWrite = solid; this.material.transparent = !solid;
     this.material.needsUpdate = true;

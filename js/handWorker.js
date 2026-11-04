@@ -32,7 +32,7 @@ self.onmessage = async (e) => {
     return;
   }
   if (d.type === 'frame') {
-    const out = { type: 'result', ts: d.ts, landmarks: [], handednesses: [], objects: [] };
+    const out = { type: 'result', ts: d.ts, landmarks: [], handednesses: [], objects: null };
     try {
       if (landmarker) { const r = landmarker.detectForVideo(d.frame, d.ts); out.landmarks = r.landmarks || []; out.handednesses = r.handednesses || []; }
       if (detector && d.detect) {

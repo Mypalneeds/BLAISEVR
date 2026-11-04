@@ -20,9 +20,11 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const isMobile = matchMedia('(pointer: coarse)').matches || /Android|iPhone|iPad/i.test(navigator.userAgent);
 
 // ---------------------------------------------------------------- settings
-const DEFAULTS = { style: 'real', focus: true, sound: true, calib: null, signHold: 450, extraSigns: false, autoPerf: true, v5: true, particles: isMobile ? 70000 : 150000, bloom: !isMobile, trails: false, sensitivity: 'standard', colorMode: 'parts', autoRotate: true, animSpeed: 1, gestureRotate: true, voiceRate: 1 };
+const DEFAULTS = { quality: 'auto', style: 'real', focus: true, sound: true, calib: null, signHold: 450, extraSigns: false, autoPerf: true, v5: true, v6: true, particles: isMobile ? 50000 : 100000, bloom: !isMobile, trails: false, sensitivity: 'standard', colorMode: 'parts', autoRotate: true, animSpeed: 1, gestureRotate: true, voiceRate: 1 };
 const settings = { ...DEFAULTS, ...safeJSON(localStorage.getItem('blaisevr:settings')) };
 if (!settings.v5) { settings.extraSigns = false; settings.v5 = true; }   // v5: simpler default gesture set
+if (!settings.v6) { settings.quality = 'auto'; settings.v6 = true; }      // v6: automatic quality (old saved 150k settings were too heavy)
+if (settings.quality !== 'custom') settings.particles = ({ beautiful: 150000, balanced: 100000, fast: 60000, fastest: 35000 })[settings.quality === 'auto' ? (isMobile ? 'fast' : 'balanced') : settings.quality] || 100000;
 function safeJSON(s) { try { return JSON.parse(s) || {}; } catch { return {}; } }
 function saveSettings() { try { localStorage.setItem('blaisevr:settings', JSON.stringify(settings)); } catch {} }
 
@@ -65,14 +67,31 @@ composer.addPass(new RenderPass(scene, camera));
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.6, 0.5, 0.22);
 const trails = new AfterimagePass(0.86);
 composer.addPass(bloom); composer.addPass(trails);
-function applyFx() { bloom.enabled = settings.bloom; trails.enabled = settings.trails; }
+// ---------- quality presets (auto steps down by itself if frames drop) ----------
+const QUALITY = {
+  beautiful: { particles: 150000, pr: Math.min(devicePixelRatio, 2), bloom: true },
+  balanced:  { particles: 100000, pr: Math.min(devicePixelRatio, 1.5), bloom: true },
+  fast:      { particles: 60000, pr: 1, bloom: false },
+  fastest:   { particles: 35000, pr: 0.75, bloom: false },
+};
+const QORDER = ['beautiful', 'balanced', 'fast', 'fastest'];
+let qLevel = settings.quality === 'auto' ? (isMobile ? 'fast' : 'balanced') : settings.quality;
+function applyQuality(level, { rebuild = true } = {}) {
+  if (!QUALITY[level]) return; qLevel = level; const q = QUALITY[level];
+  renderer.setPixelRatio(q.pr); composer.setPixelRatio(q.pr); composer.setSize(innerWidth, innerHeight); cloud.setPixelRatio(q.pr); mirror?.cloud.setPixelRatio(q.pr);
+  settings.bloom = q.bloom; applyFx();
+  if (rebuild && settings.particles !== q.particles) { settings.particles = q.particles; cache.clear(); if (S.built) loadModel(S.idx, { morph: false, announce: false }); }
+  else settings.particles = q.particles;
+  $('#perfState') && ($('#perfState').title = `Quality: ${level}`);
+}
+function applyFx() { bloom.enabled = settings.bloom && settings.style !== 'real'; trails.enabled = settings.trails; }
 const STYLES = ['real', 'glow', 'xray'], STYLE_NAMES = { real: 'Realistic', glow: 'Glow', xray: 'X-ray' };
 function applyStyle() {
   const st = settings.style;
   cloud.setStyle(st);
   scene.background = st === 'real' ? studioBg : null;
   stars.visible = st !== 'real'; floorShadow.visible = floorRing.visible = st === 'real';
-  bloom.strength = st === 'real' ? 0.22 : st === 'xray' ? 0.9 : 0.6; bloom.threshold = st === 'real' ? 0.72 : st === 'xray' ? 0.1 : 0.22;
+  applyFx(); bloom.strength = st === 'real' ? 0.22 : st === 'xray' ? 0.9 : 0.6; bloom.threshold = st === 'real' ? 0.72 : st === 'xray' ? 0.1 : 0.22;
   btnState('style', st !== 'glow'); const b = $('[data-act="style"] span'); if (b) b.textContent = 'View: ' + STYLE_NAMES[st];
 }
 function cycleStyle() { settings.style = STYLES[(STYLES.indexOf(settings.style) + 1) % STYLES.length]; saveSettings(); applyStyle(); syncSettingsUI(); toast('View: ' + STYLE_NAMES[settings.style]); }
@@ -107,7 +126,7 @@ function getBuilt(def) {
   const key = def.id + ':' + settings.particles;
   if (cache.has(key)) return cache.get(key);
   const b = buildModel(def, settings.particles);
-  cache.set(key, b); if (cache.size > 5) cache.delete(cache.keys().next().value);
+  cache.set(key, b); if (cache.size > 6) cache.delete(cache.keys().next().value);
   return b;
 }
 
@@ -130,6 +149,7 @@ function loadModel(i, { morph = true, announce = true } = {}) {
   $('#modelMeta').textContent = `${def.category || ''} · ${built.parts.length} parts · ${(built.N / 1000).toFixed(0)}k particles`;
   if (models[S.idx].id && !models[S.idx].id.startsWith('file-') && !models[S.idx].id.startsWith('img-')) history.replaceState(null, '', '#m=' + encodeURIComponent(def.id));
   if (announce) toast(`${def.emoji || '✨'} ${def.name}`);
+  setTimeout(prebuildNeighbours, 1200);
   if (S.quiz) endQuiz(true);
   if (tour?.on && !tour.switching) toggleTour(false);
 }
@@ -268,7 +288,7 @@ let last = performance.now(), frame = 0;
 renderer.setAnimationLoop(loop);
 function loop() {
   const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000); last = now; frame++;
-  if (mirror.on) { S.time += dt; mirror.update(dt, S.time); perf.frames++; composer.render(); return; }
+  if (mirror.on) { S.time += dt; mirror.update(dt, S.time); perf.frames++; present(); return; }
   S.time += dt; if (S.anim) S.animTime += dt * settings.animSpeed;
   S.form += (S.formT - S.form) * Math.min(1, dt * (S.formT > S.form ? 1.6 : 2.4));
   S.explode += (S.explodeT - S.explode) * Math.min(1, dt * 5);
@@ -298,8 +318,11 @@ function loop() {
   }
   if (S.demo) demoStep(dt);
   perf.frames++;
-  if (renderer.xr.isPresenting) renderer.render(scene, camera); else composer.render();
+  if (renderer.xr.isPresenting) renderer.render(scene, camera); else present();
 }
+
+// skip the post-processing chain entirely when no effect is on (saves a full-screen copy every frame)
+function present() { if (bloom.enabled || trails.enabled) composer.render(); else renderer.render(scene, camera); }
 
 // ---------------------------------------------------------------- mouse / touch
 // Left-drag a part = move it · left-drag empty space = rotate · right-drag = rotate · middle-drag = pan
@@ -676,22 +699,27 @@ let lastGuide = null;
 function renderGuide() { $('#gestureGuide').innerHTML = (settings.extraSigns ? GUIDE : CORE_GUIDE).map(([e, k, t]) => `<span data-pose="${k}"><b>${e}</b>${t}</span>`).join(''); lastGuide = null; }
 function highlightGuide(p) { if (p === lastGuide) return; lastGuide = p; $$('#gestureGuide span').forEach(s => s.classList.toggle('on', s.dataset.pose === p || (p === 'partial' && s.dataset.pose === 'open'))); }
 
-// ---------------------------------------------------------------- adaptive performance while the camera is on
-const perf = { slow: 0, reduced: false, renderFps: 60, frames: 0, t: performance.now() };
+// ---------------------------------------------------------------- automatic quality governor + speed readout
+const perf = { slow: 0, renderFps: 60, frames: 0, t: performance.now(), lastDrop: 0, warm: performance.now() + 4000 };
 setInterval(() => {
   const now = performance.now(); perf.renderFps = perf.frames * 1000 / (now - perf.t); perf.frames = 0; perf.t = now;
-  if (!tracker.running || !settings.autoPerf || perf.reduced || !tracker.fps) { perf.slow = 0; return; }
-  perf.slow = (tracker.fps < 18 || perf.renderFps < 28) ? perf.slow + 1 : 0;
-  if (perf.slow >= 3) {
-    perf.reduced = true;
-    const target = settings.particles > 70000 ? 70000 : settings.particles;
-    perf.prev = { particles: settings.particles, bloom: settings.bloom };
-    settings.bloom = false; applyFx();
-    if (target !== settings.particles) { settings.particles = target; cache.clear(); loadModel(S.idx, { morph: false, announce: false }); syncSettingsUI(); }
-    renderer.setPixelRatio(1); composer.setSize(innerWidth, innerHeight);
-    toast(`⚡ Lighter graphics so hand tracking stays smooth (was ${tracker.fps} fps). Change it in ⚙ Settings.`);
+  const f = Math.round(perf.renderFps), hf = tracker.running ? tracker.fps : null;
+  const chip = $('#perfState'); if (chip) { chip.textContent = `${f} fps${hf != null ? ' · hands ' + hf : ''}`; chip.style.color = f < 30 || (hf != null && hf < 15) ? 'var(--bad)' : f < 45 ? 'var(--gold)' : ''; }
+  if (settings.quality !== 'auto' || !settings.autoPerf || now < perf.warm || document.hidden) { perf.slow = 0; return; }
+  const slow = perf.renderFps < 40 || (hf != null && hf > 0 && hf < 15);
+  perf.slow = slow ? perf.slow + 1 : 0;
+  const i = QORDER.indexOf(qLevel);
+  if (perf.slow >= 3 && i < QORDER.length - 1 && now - perf.lastDrop > 4000) {
+    perf.slow = 0; perf.lastDrop = now; perf.warm = now + 2500;
+    applyQuality(QORDER[i + 1]); syncSettingsUI();
+    toast(`⚡ Quality lowered to "${QORDER[i + 1]}" to keep things smooth (${f} fps). Change it in ⚙ Settings.`);
   }
 }, 1000);
+// pre-build the next & previous models while idle so switching is instant
+const idle = window.requestIdleCallback || (fn => setTimeout(fn, 400));
+function prebuildNeighbours() {
+  for (const d of [1, -1]) idle(() => { try { const m = models[(S.idx + d + models.length) % models.length]; if (m && !cache.has(m.id + ':' + settings.particles)) getBuilt(m); } catch {} }, { timeout: 4000 });
+}
 
 // ---------------------------------------------------------------- 🪞 Mirror Mode
 const mirror = new MirrorMode({ scene, camera, video: $('#camVideo'), overlay: $('#camOverlay'), toast, speak, sfx,
@@ -998,13 +1026,14 @@ async function share() {
 // settings dialog
 function syncSettingsUI() {
   $('#setStyle').value = settings.style; $('#setFocus').checked = settings.focus;
-  $('#setParticles').value = settings.particles; $('#setBloom').checked = settings.bloom; $('#setTrails').checked = settings.trails;
+  $('#setQuality').value = settings.quality; $('#setParticles').value = settings.particles; $('#setBloom').checked = settings.bloom; $('#setTrails').checked = settings.trails;
   $('#setSens').value = settings.sensitivity; $('#camSens').value = settings.sensitivity; $('#setColor').value = settings.colorMode;
   $('#setHold').value = settings.signHold; $('#holdVal').textContent = (settings.signHold / 1000).toFixed(2) + ' s'; $('#setExtra').checked = settings.extraSigns; $('#setPerf').checked = settings.autoPerf;
   $('#setAuto').checked = settings.autoRotate; $('#setAnimSpeed').value = settings.animSpeed; $('#setHandRot').checked = settings.gestureRotate;
   btnState('anim', S.anim); btnState('labels', S.labels); btnState('sound', settings.sound);
 }
-$('#setParticles').onchange = e => { settings.particles = +e.target.value; saveSettings(); cache.clear(); loadModel(S.idx, { morph: false, announce: false }); toast(`${(settings.particles / 1000) | 0}k particles`); };
+$('#setQuality').onchange = e => { settings.quality = e.target.value; saveSettings(); applyQuality(settings.quality === 'auto' ? (isMobile ? 'fast' : 'balanced') : settings.quality); syncSettingsUI(); toast('Quality: ' + e.target.options[e.target.selectedIndex].text); };
+$('#setParticles').onchange = e => { settings.quality = 'custom'; settings.particles = +e.target.value; saveSettings(); cache.clear(); loadModel(S.idx, { morph: false, announce: false }); toast(`${(settings.particles / 1000) | 0}k particles`); };
 $('#setStyle').onchange = e => { settings.style = e.target.value; saveSettings(); applyStyle(); };
 $('#setFocus').onchange = e => { settings.focus = e.target.checked; saveSettings(); };
 $('#setBloom').onchange = e => { settings.bloom = e.target.checked; saveSettings(); applyFx(); };
@@ -1135,7 +1164,7 @@ $('#searchIn').addEventListener('input', renderSearch);
 $('#searchIn').addEventListener('keydown', e => { if (e.key === 'Enter') { const r = search(e.target.value); if (r[0]) goResult(r[0]); } });
 
 // ---------------------------------------------------------------- boot
-buildPicker(); syncSettingsUI(); applyStyle(); renderGuide();
+applyQuality(qLevel, { rebuild: false }); buildPicker(); syncSettingsUI(); applyStyle(); renderGuide();
 const hashId = decodeURIComponent((location.hash.match(/m=([^&]+)/) || [])[1] || '');
 const start = Math.max(0, models.findIndex(m => m.id === hashId));
 loadModel(start, { morph: false, announce: false });

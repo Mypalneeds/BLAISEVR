@@ -147,12 +147,15 @@ export class HandTracker {
     if (now - this._lastLight > 2000) this._checkLight(now);
     if (this.worker) {
       this._busy = true; this._sentAt = now;
-      try { const frame = await createImageBitmap(v); this.worker.postMessage({ type: 'frame', frame, ts: now, detect: !!(this.objects && this.wantObjects) }, [frame]); }
+      this._n = (this._n || 0) + 1;
+      const detect = !!(this.objects && this.wantObjects) && this._n % 3 === 0;   // objects every 3rd frame; hands every frame
+      try { const frame = await createImageBitmap(v, { resizeWidth: 384, resizeHeight: Math.round(384 * (v.videoHeight || 480) / (v.videoWidth || 640)), resizeQuality: 'low' }); this.worker.postMessage({ type: 'frame', frame, ts: now, detect }, [frame]); }
       catch { this._busy = false; }
       this._sentAt = now;
     } else if (this.landmarker) {
       let res; try { res = this.landmarker.detectForVideo(v, now); } catch { return; }
-      if (this.detector && this.wantObjects) {
+      this._n = (this._n || 0) + 1;
+      if (this.detector && this.wantObjects && this._n % 3 === 0) {
         try { const r = this.detector.detectForVideo(v, now + 0.01), W = v.videoWidth, H = v.videoHeight;
           res = { ...res, objects: (r.detections || []).filter(o => o.boundingBox).map(o => ({ label: o.categories[0].categoryName, score: o.categories[0].score, x: o.boundingBox.originX / W, y: o.boundingBox.originY / H, w: o.boundingBox.width / W, h: o.boundingBox.height / H })) };
         } catch {}
@@ -208,7 +211,7 @@ export class HandTracker {
     } else if (now - this._noHandSince > 12000) this._hint('nohand', '👋 Raise your hand in front of the camera — snap 🫰 or make a fist ✊ to start', 20000);
 
     this._draw(hands);
-    this.onFrame({ hands, snap, swipe, t: now, objects: res.objects || [] });
+    this.onFrame({ hands, snap, swipe, t: now, objects: res.objects ?? null });
   }
   _draw(hands) {
     const c = this.ctx; if (!c) return;

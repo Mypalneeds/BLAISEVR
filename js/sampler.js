@@ -97,6 +97,7 @@ export function sampleShape(s, n, push) {
     P.set(x, y, z); Nn.set(nx, ny, nz2);
     if (amp && (nx || ny || nz2)) { // displace along normal & tilt the normal by the noise gradient
       const e = 0.02, h0 = nz(x, y, z);
+      if (amp < 0.02) { P.addScaledVector(Nn, h0 * amp); P.applyQuaternion(q).add(c); Nn.applyQuaternion(q); if (jit) P.x += gauss() * jit, P.y += gauss() * jit, P.z += gauss() * jit; push(P.x, P.y, P.z, Nn.x, Nn.y, Nn.z, ft, rgb); return; }
       const gx = (nz(x + e, y, z) - h0) / e, gy = (nz(x, y + e, z) - h0) / e, gz = (nz(x, y, z + e) - h0) / e;
       P.addScaledVector(Nn, h0 * amp);
       Nn.x -= gx * amp * 0.9; Nn.y -= gy * amp * 0.9; Nn.z -= gz * amp * 0.9; Nn.normalize();
@@ -178,8 +179,13 @@ export function sampleShape(s, n, push) {
         emit(rr * ct, y, rr * st, T3.x, T3.y, T3.z, (g.L0 + g.len * t) / L.L); break;
       }
       case 'tube': {
-        if (!s._curve) s._curve = new THREE.CatmullRomCurve3(s.pts.map(p => vec(p)), !!s.closed);
-        const t = R(); s._curve.getPointAt(t, T2); s._curve.getTangentAt(t, T3);
+        // pre-sampled lookup table along the curve (arc-length spaced) — ~10x faster than getPointAt per particle
+        if (!s._lut) {
+          const curve = new THREE.CatmullRomCurve3(s.pts.map(p => vec(p)), !!s.closed), M = 256, pts = curve.getSpacedPoints(M);
+          s._lut = { pts, tan: pts.map((p, k) => (k < M ? pts[k + 1].clone().sub(p) : p.clone().sub(pts[k - 1])).normalize()), M };
+        }
+        const L = s._lut, t = R(), f = t * L.M, k = Math.min(L.M - 1, f | 0), u = f - k;
+        T2.copy(L.pts[k]).lerp(L.pts[k + 1], u); T3.copy(L.tan[k]);
         tubeOffset(T2, T3, r, t, emit); break;
       }
       case 'helix': {
@@ -296,7 +302,13 @@ export function buildModel(def, N) {
   const allPts = parts.every(p => p.shapes.every(s => s.t === 'pts'));
   const gain = allPts ? 0.8 : Math.min(1.1, Math.max(0.45, Math.pow(normArea / 45, 0.4)));
   const solidSize = Math.min(0.22, Math.max(0.035, Math.sqrt(normArea / N) * 4.2));
-  return { def, N, positions: pos, part, colors: col, normals: nor, flow, mat, ao, parts: meta, scale, center, gain, solidSize };
+  // partition: opaque particles first, glass/volume particles last → each render pass draws only its own range
+  const glassy = i => mat[i] === 3 || (!nor[i * 3] && !nor[i * 3 + 1] && !nor[i * 3 + 2]);
+  const order = new Uint32Array(N); let o = 0; for (let i = 0; i < N; i++) if (!glassy(i)) order[o++] = i;
+  const glassStart = o; for (let i = 0; i < N; i++) if (glassy(i)) order[o++] = i;
+  const perm = (arr, k) => { const out = new Float32Array(arr.length); for (let j = 0; j < N; j++) for (let c = 0; c < k; c++) out[j * k + c] = arr[order[j] * k + c]; return out; };
+  return { def, N, positions: perm(pos, 3), part: perm(part, 1), colors: perm(col, 3), normals: perm(nor, 3), flow: perm(flow, 1), mat: perm(mat, 1), ao, glassStart,
+    parts: meta, scale, center, gain, solidSize };
 }
 
 // scatter cloud used for the dissolved / idle state
