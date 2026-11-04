@@ -19,7 +19,7 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const isMobile = matchMedia('(pointer: coarse)').matches || /Android|iPhone|iPad/i.test(navigator.userAgent);
 
 // ---------------------------------------------------------------- settings
-const DEFAULTS = { style: 'real', focus: true, sound: true, calib: null, particles: isMobile ? 70000 : 150000, bloom: !isMobile, trails: false, sensitivity: 'standard', colorMode: 'parts', autoRotate: true, animSpeed: 1, gestureRotate: true, voiceRate: 1 };
+const DEFAULTS = { style: 'real', focus: true, sound: true, calib: null, signHold: 450, extraSigns: true, autoPerf: true, particles: isMobile ? 70000 : 150000, bloom: !isMobile, trails: false, sensitivity: 'standard', colorMode: 'parts', autoRotate: true, animSpeed: 1, gestureRotate: true, voiceRate: 1 };
 const settings = { ...DEFAULTS, ...safeJSON(localStorage.getItem('blaisevr:settings')) };
 function safeJSON(s) { try { return JSON.parse(s) || {}; } catch { return {}; } }
 function saveSettings() { try { localStorage.setItem('blaisevr:settings', JSON.stringify(settings)); } catch {} }
@@ -119,6 +119,7 @@ function loadModel(i, { morph = true, announce = true } = {}) {
   S.userOff = built.parts.map(() => new THREE.Vector3()); S.offGoal = built.parts.map(() => new THREE.Vector3()); S.grab = null; if (game?.on) endGame(false);
   if (settings.colorMode !== 'parts') cloud.setColorMode(settings.colorMode);
   S.sel = -1; S.hover = -1; S.isolate = false; S.pulled.clear(); S.pullAmt = built.parts.map(() => 0);
+  computeStates();  // keep picking in sync with the new part list immediately
   // textbook-style models open already sliced so you can see inside
   if (def.autoCut) { S.cutAxis = def.autoCut[0]; S.cutW = S.cutWT = def.autoCut[1]; S.cutOn = true; S.autoCut = true; $('#cutBar').hidden = false; $('#cutSlider').value = S.cutWT; btnState('cut', true); }
   else if (S.autoCut) { S.cutOn = false; S.autoCut = false; $('#cutBar').hidden = true; btnState('cut', false); }
@@ -205,7 +206,7 @@ const easeInOut = x => x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
 // ---------------------------------------------------------------- picking & labels
 const proj = new THREE.Vector3();
 function pickAt(cx, cy) {
-  if (!S.built || S.form < 0.6) return -1;
+  if (!S.built || S.form < 0.6 || states.length !== S.built.parts.length) return -1;   // states lag one frame after a model switch
   const W = innerWidth, H = innerHeight, mw = cloud.points.matrixWorld;
   const cutN = cutNormal();
   let best = -1, bestZ = 9, near = -1, nearD = 48 * 48;
@@ -232,17 +233,23 @@ function buildLabels() {
 function updateLabels() {
   const show = S.form > 0.8 && (S.labels || S.explode > 0.35);
   const mw = cloud.points.matrixWorld, W = innerWidth, H = innerHeight;
-  S.built.parts.forEach((p, i) => {
-    const el = labelEls[i]; if (!el) return;
+  // priority: selected, hovered, then biggest parts; skip labels that would overlap one already placed
+  const order = S.built.parts.map((p, i) => i).sort((a, b) => (b === S.sel) - (a === S.sel) || (b === S.hover) - (a === S.hover) || S.built.parts[b].count - S.built.parts[a].count);
+  const placedR = [];
+  for (const i of order) {
+    const p = S.built.parts[i], el = labelEls[i]; if (!el) continue;
     const vis = (show || S.sel === i) && !(S.isolate && S.sel !== i);
-    if (!vis) { el.style.opacity = 0; el.style.pointerEvents = 'none'; return; }
+    if (!vis) { el.style.opacity = 0; el.style.pointerEvents = 'none'; continue; }
     const s = states[i];
     proj.copy(p.centroid).sub(s.pivot).multiplyScalar(s.scale).applyQuaternion(s.q).add(s.pivot).add(s.t).applyMatrix4(mw).project(camera);
-    if (proj.z > 1) { el.style.opacity = 0; return; }
+    if (proj.z > 1) { el.style.opacity = 0; el.style.pointerEvents = 'none'; continue; }
+    const x = (proj.x * .5 + .5) * W, y = (-proj.y * .5 + .5) * H, w = p.name.length * 6.6 + 26, r = [x - w / 2, y - 30, x + w / 2, y - 8];
+    if (S.sel !== i && placedR.some(q => r[0] < q[2] + 4 && r[2] > q[0] - 4 && r[1] < q[3] + 2 && r[3] > q[1] - 2)) { el.style.opacity = 0; el.style.pointerEvents = 'none'; continue; }
+    placedR.push(r);
     el.style.opacity = S.sel === i ? 1 : 0.85; el.style.pointerEvents = 'auto';
     el.classList.toggle('sel', S.sel === i);
-    el.style.transform = `translate(${(proj.x * .5 + .5) * W}px, ${(-proj.y * .5 + .5) * H}px) translate(-50%, -140%)`;
-  });
+    el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -140%)`;
+  }
 }
 const escapeHTML = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -282,10 +289,11 @@ function loop() {
     const ft = proj.set(0, 0, 0);
     if (focusing) { const p = S.built.parts[S.sel], s = states[S.sel]; ft.copy(p.centroid).sub(s.pivot).multiplyScalar(s.scale).applyQuaternion(s.q).add(s.pivot).add(s.t).multiplyScalar(-0.85); }
     S.focus.lerp(ft, Math.min(1, dt * 3)); cloud.group.position.copy(S.focus);
-    if (frame % 3 === 0 && pointer.inside && !dragging && !handCursor.active) S.hover = pickAt(pointer.x, pointer.y);
+    if (frame % 3 === 0 && pointer.inside && !dragging && !handCursor.active && !tracker.running) S.hover = pickAt(pointer.x, pointer.y);
     updateLabels();
   }
   if (S.demo) demoStep(dt);
+  perf.frames++;
   if (renderer.xr.isPresenting) renderer.render(scene, camera); else composer.render();
 }
 
@@ -507,76 +515,89 @@ const G = { slots: {}, dwellPart: -1, dwellStart: 0, lastNav: 0, two: null, last
 const ACTION_NAMES = { fist: 'form · move to rotate', open: 'explode', partial: 'explode', point: 'point to select', pinch: 'grab & move', ok: 'isolate part', victory: 'next model', three: 'cut-away', rock: 'change view', shaka: 'guided tour', thumb: 'explain', thumbdown: 'reassemble' };
 tracker.onHint = (k, msg) => toast(msg);
 const toScreen = p => ({ x: clamp(((1 - p.x) - 0.15) / 0.7, 0, 1) * innerWidth, y: clamp((p.y - 0.12) / 0.7, 0, 1) * innerHeight });
-// fires once when a hand settles into a new sign
-function onSign(h, pose) {
-  const SIGNS = ['victory', 'thumb', 'thumbdown', 'ok', 'rock', 'shaka', 'three']; if (!SIGNS.includes(pose)) return;
-  const now = performance.now(); if (now - G.lastSign < 350) return; G.lastSign = now;
+// command signs must be HELD (~0.45 s, with a filling ring) so passing through them while moving never triggers anything
+const COMMANDS = ['victory', 'thumb', 'thumbdown', 'ok', 'rock', 'shaka', 'three'];
+function runCommand(pose) {
   switch (pose) {
-    case 'victory': if (now - G.lastNav > 1300) { G.lastNav = now; next(); sfx.sign(); } break;
-    case 'thumb': speakPart(S.sel); sfx.sign(); break;
+    case 'victory': next(); break;
+    case 'thumb': speakPart(S.sel); break;
     case 'thumbdown': reassemble(); break;
-    case 'ok': { const p = S.hover >= 0 ? S.hover : S.sel; if (p >= 0) { select(p); S.isolate = !S.isolate; updateInfo(); flash(S.isolate ? '👌 Isolated ' + S.built.parts[p].name : '👌 Showing all'); } else { S.labels = !S.labels; btnState('labels', S.labels); flash('👌 Labels ' + (S.labels ? 'on' : 'off')); } sfx.sign(); break; }
-    case 'rock': cycleStyle(); flash('🤘 View: ' + STYLE_NAMES[settings.style]); sfx.sign(); break;
-    case 'shaka': toggleTour(); flash('🤙 Tour ' + (tour.on ? 'started' : 'stopped')); sfx.sign(); break;
-    case 'three': toggleCut(); flash('3️⃣ Cut-away ' + (S.cutOn ? 'on' : 'off')); sfx.sign(); break;
+    case 'ok': { const p = S.hover >= 0 ? S.hover : S.sel; if (p >= 0) { select(p); S.isolate = !S.isolate; updateInfo(); flash(S.isolate ? '👌 Isolated ' + S.built.parts[p].name : '👌 Showing all'); } break; }
+    case 'rock': cycleStyle(); flash('🤘 View: ' + STYLE_NAMES[settings.style]); break;
+    case 'shaka': toggleTour(); flash('🤙 Tour ' + (tour.on ? 'started' : 'stopped')); break;
+    case 'three': toggleCut(); flash('3️⃣ Cut-away ' + (S.cutOn ? 'on' : 'off')); break;
   }
+  sfx.sign();
+}
+function signRing(pose, progress) {
+  const el = $('#signRing');
+  if (!pose) { el.hidden = true; return; }
+  el.hidden = false; el.style.setProperty('--p', progress); el.querySelector('b').textContent = POSES[pose] || '';
+  el.querySelector('small').textContent = progress >= 1 ? '✓' : (ACTION_NAMES[pose] || '');
 }
 function singleHand(h, cur) {
-  const sl = G.slots[h.side] || (G.slots[h.side] = { pose: null, count: 0, prevPalm: null });
-  if (h.pose === sl.pose) sl.count++; else { if (sl.pose === 'pinch' && S.grab?.mode === 'hand') endGrab(); sl.pose = h.pose; sl.count = 1; }
-  const holding = sl.count >= 2, onset = sl.count === 2;
+  const sl = G.slots[h.side] || (G.slots[h.side] = { since: -1, fired: -1, prevPalm: null, pose: null });
+  const isNew = sl.since !== h.slot.since;
+  if (isNew) { if (sl.pose === 'pinch' && S.grab?.mode === 'hand') endGrab(); sl.since = h.slot.since; sl.pose = h.pose; }
   $('#gestureName').textContent = `${POSES[h.pose] || ''} ${ACTION_NAMES[h.pose] || h.pose}`;
   highlightGuide(h.pose);
   $('#openBar').style.width = `${(h.openness * 100) | 0}%`; $('#openPct').textContent = `${(h.openness * 100) | 0}%`;
   const src = h.pose === 'pinch' ? h.pinchPt : h.tip, sp = toScreen(src);
-  handCursor.x += (sp.x - handCursor.x) * 0.6; handCursor.y += (sp.y - handCursor.y) * 0.6;
+  handCursor.x += (sp.x - handCursor.x) * 0.65; handCursor.y += (sp.y - handCursor.y) * 0.65;
   const showCursor = ['point', 'pinch', 'ok'].includes(h.pose) || !!S.grab;
   handCursor.active = showCursor; cur.hidden = !showCursor;
   if (showCursor) { cur.style.transform = `translate(${handCursor.x}px, ${handCursor.y}px)`; cur.classList.toggle('pinch', h.pose === 'pinch'); }
-  if (!holding) { sl.prevPalm = h.palm; return; }
-  if (onset) onSign(h, h.pose);
+
+  // ---- command signs: hold to confirm
+  if (COMMANDS.includes(h.pose) && settings.extraSigns) {
+    const prog = Math.min(1, h.holdMs / settings.signHold);
+    signRing(h.pose, sl.fired === sl.since ? 1 : prog);
+    if (prog >= 1 && sl.fired !== sl.since) { sl.fired = sl.since; runCommand(h.pose); }
+    sl.prevPalm = h.palm; return;
+  }
+  signRing(null);
+
+  // ---- continuous poses: act every frame, no delay
   switch (h.pose) {
     case 'fist': {
       if (!S.summoned) summon();
-      if (onset && (S.explodeT > 0.05 || anyMoved()) && !game.on) { setExplode(0); S.pulled.clear(); sfx.whoosh(false); }
-      if (sl.prevPalm) { S.rotY += -(h.palm.x - sl.prevPalm.x) * 7; S.rotXT = clamp(S.rotXT + (h.palm.y - sl.prevPalm.y) * 5, -1.3, 1.3); S.velY = -(h.palm.x - sl.prevPalm.x) * 60; }
+      if (isNew && (S.explodeT > 0.05 || anyMoved()) && !game.on) { setExplode(0); S.pulled.clear(); sfx.whoosh(false); }
+      if (sl.prevPalm && !isNew) { const dx = h.palm.x - sl.prevPalm.x, dy = h.palm.y - sl.prevPalm.y; S.rotY += -dx * 7; S.rotXT = clamp(S.rotXT + dy * 5, -1.3, 1.3); S.velY = -dx * 60; }
       break;
     }
     case 'open': case 'partial':
-      if (S.summoned && !game.on && (!S.cutOn || S.autoCut)) { const before = S.explodeT; setExplode(clamp((h.openness - 0.35) / 0.5, 0, 1)); if (before < 0.2 && S.explodeT >= 0.2) sfx.whoosh(true); }
-      if (S.cutOn && !S.autoCut) S.cutWT = ((1 - h.palm.x) * 2 - 1) * -TARGET_RADIUS * 1.3;
-      if (settings.gestureRotate) { const r = h.roll, dz = 0.22; S.velY = Math.abs(r) > dz ? -(r - Math.sign(r) * dz) * 3 : S.velY * 0.9; S.rotXT = clamp((h.palm.y - 0.5) * 1.6, -1, 1); }
+      if (S.summoned && !game.on && !S.grab) { const before = S.explodeT; setExplode(clamp((h.openness - 0.3) / 0.5, 0, 1)); if (before < 0.2 && S.explodeT >= 0.2) sfx.whoosh(true); }
+      if (settings.gestureRotate) { const r = h.roll, dz = 0.25; S.velY = Math.abs(r) > dz ? -(r - Math.sign(r) * dz) * 3 : S.velY * 0.9; S.rotXT = clamp((h.palm.y - 0.5) * 1.6, -1, 1); }
       break;
-    case 'point': case 'ok': {
+    case 'point': {
       const p = pickAt(handCursor.x, handCursor.y); if (p !== S.hover && p >= 0) sfx.tick(); S.hover = p;
-      if (h.pose === 'point') {
-        if (p !== G.dwellPart) { G.dwellPart = p; G.dwellStart = performance.now(); }
-        else if (p >= 0 && p !== S.sel && performance.now() - G.dwellStart > 600) { select(p); sfx.select(); }
-        cur.style.setProperty('--dwell', p >= 0 && p !== S.sel ? Math.min(1, (performance.now() - G.dwellStart) / 600) : 0);
-      }
+      if (p !== G.dwellPart) { G.dwellPart = p; G.dwellStart = performance.now(); }
+      else if (p >= 0 && p !== S.sel && performance.now() - G.dwellStart > 550) { select(p); sfx.select(); }
+      cur.style.setProperty('--dwell', p >= 0 && p !== S.sel ? Math.min(1, (performance.now() - G.dwellStart) / 550) : 0);
       break;
     }
     case 'pinch':
-      if (onset) { const p = pickAt(handCursor.x, handCursor.y); const t = p >= 0 ? p : S.hover >= 0 ? S.hover : S.sel; if (t >= 0) startGrab(t, handCursor.x, handCursor.y, 'hand', h.size); }
+      if (isNew) { const p = pickAt(handCursor.x, handCursor.y); const t = p >= 0 ? p : S.hover >= 0 ? S.hover : S.sel; if (t >= 0) startGrab(t, handCursor.x, handCursor.y, 'hand', h.size); }
       else if (S.grab?.mode === 'hand') moveGrab(handCursor.x, handCursor.y, h.size);
       break;
   }
   sl.prevPalm = h.palm;
 }
-tracker.onFrame = ({ hands, snap, swipe }) => {
+tracker.onFrame = (f) => { try { handleHands(f); } catch (err) { console.error('gesture handler', err); } };
+function handleHands({ hands, snap, swipe }) {
   const cur = $('#cursor');
   $('#handState').textContent = hands.length ? hands.map(h => (h.side === 'Left' ? 'L' : 'R') + (POSES[h.pose] || '')).join(' ') : 'no hand';
-  $('#camStatus').textContent = `Tracking · ${tracker.fps} fps${tracker.light != null ? ' · light ' + (tracker.light < 0.18 ? 'low ⚠️' : 'ok') : ''}`;
-  if (!hands.length) { handCursor.active = false; cur.hidden = true; G.two = null; if (S.grab?.mode === 'hand') endGrab(); Object.values(G.slots).forEach(s => { s.pose = null; s.count = 0; s.prevPalm = null; }); $('#gestureName').textContent = '—'; highlightGuide(null); return; }
+  $('#camStatus').textContent = `${tracker.fps} fps · ${tracker.mode}${tracker.light != null ? ' · light ' + (tracker.light < 0.18 ? 'low ⚠️' : 'ok') : ''}`;
+  if (!hands.length) { signRing(null); handCursor.active = false; cur.hidden = true; G.two = null; if (S.grab?.mode === 'hand') endGrab(); Object.values(G.slots).forEach(s => { s.pose = null; s.count = 0; s.prevPalm = null; }); $('#gestureName').textContent = '—'; highlightGuide(null); return; }
   activity();
   if (snap) { toggleSummon(); flash('🫰 Snap!'); sfx.whoosh(S.summoned); }
   if (swipe && !S.grab && performance.now() - G.lastNav > 900) { G.lastNav = performance.now(); swipe === 'right' ? next() : prev(); flash(swipe === 'right' ? '👉 Next' : '👈 Previous'); sfx.whoosh(true); return; }
   if (hands.length >= 2) {
     const [a, b] = hands, act = hands.find(h => ['point', 'pinch', 'ok'].includes(h.pose)), other = hands.find(h => h !== act);
     // one hand points / grabs while the other (fist) rotates the model
-    if (act && other && other.pose === 'fist') { G.two = null; singleHand(act, cur); const sl = G.slots[other.side] || (G.slots[other.side] = {}); if (sl.prevPalm) { S.rotY += -(other.palm.x - sl.prevPalm.x) * 7; S.rotXT = clamp(S.rotXT + (other.palm.y - sl.prevPalm.y) * 5, -1.3, 1.3); } sl.prevPalm = other.palm; return; }
+    if (act && other && other.pose === 'fist') { G.two = null; singleHand(act, cur); const sl = G.slots[other.side] || (G.slots[other.side] = { since: -1, fired: -1, prevPalm: null }); if (sl.prevPalm) { S.rotY += -(other.palm.x - sl.prevPalm.x) * 7; S.rotXT = clamp(S.rotXT + (other.palm.y - sl.prevPalm.y) * 5, -1.3, 1.3); } sl.prevPalm = other.palm; return; }
     if (S.grab?.mode === 'hand') endGrab();
-    cur.hidden = true; handCursor.active = false;
+    cur.hidden = true; handCursor.active = false; signRing(null);
     const d = Math.hypot(a.palm.x - b.palm.x, a.palm.y - b.palm.y), ang = Math.atan2(a.palm.y - b.palm.y, a.palm.x - b.palm.x);
     const stretch = a.pose === 'pinch' && b.pose === 'pinch';
     if (!G.two || G.two.stretch !== stretch) G.two = { d, ang, z: S.zoomT, ry: S.rotY, e: S.explodeT, stretch };
@@ -591,11 +612,28 @@ tracker.onFrame = ({ hands, snap, swipe }) => {
   }
   G.two = null;
   singleHand(hands[0], cur);
-};
+}
 const GUIDE = [['🫰', 'snap', 'summon'], ['✊', 'fist', 'form / rotate'], ['✋', 'open', 'explode'], ['☝️', 'point', 'select'], ['🤏', 'pinch', 'grab & move'], ['👌', 'ok', 'isolate'], ['👍', 'thumb', 'explain'], ['👎', 'thumbdown', 'reassemble'], ['✌️', 'victory', 'next'], ['3️⃣', 'three', 'cut-away'], ['🤘', 'rock', 'view'], ['🤙', 'shaka', 'tour'], ['👋', 'swipe', 'prev / next'], ['🙌', 'two', 'zoom · turn'], ['🤏🤏', 'two', 'pull apart']];
 $('#gestureGuide').innerHTML = GUIDE.map(([e, k, t]) => `<span data-pose="${k}"><b>${e}</b>${t}</span>`).join('');
 let lastGuide = null;
 function highlightGuide(p) { if (p === lastGuide) return; lastGuide = p; $$('#gestureGuide span').forEach(s => s.classList.toggle('on', s.dataset.pose === p || (p === 'partial' && s.dataset.pose === 'open'))); }
+
+// ---------------------------------------------------------------- adaptive performance while the camera is on
+const perf = { slow: 0, reduced: false, renderFps: 60, frames: 0, t: performance.now() };
+setInterval(() => {
+  const now = performance.now(); perf.renderFps = perf.frames * 1000 / (now - perf.t); perf.frames = 0; perf.t = now;
+  if (!tracker.running || !settings.autoPerf || perf.reduced || !tracker.fps) { perf.slow = 0; return; }
+  perf.slow = (tracker.fps < 18 || perf.renderFps < 28) ? perf.slow + 1 : 0;
+  if (perf.slow >= 3) {
+    perf.reduced = true;
+    const target = settings.particles > 70000 ? 70000 : settings.particles;
+    perf.prev = { particles: settings.particles, bloom: settings.bloom };
+    settings.bloom = false; applyFx();
+    if (target !== settings.particles) { settings.particles = target; cache.clear(); loadModel(S.idx, { morph: false, announce: false }); syncSettingsUI(); }
+    renderer.setPixelRatio(1); composer.setSize(innerWidth, innerHeight);
+    toast(`⚡ Lighter graphics so hand tracking stays smooth (was ${tracker.fps} fps). Change it in ⚙ Settings.`);
+  }
+}, 1000);
 
 // ---------------------------------------------------------------- calibration wizard
 async function calibrate() {
@@ -878,6 +916,7 @@ function syncSettingsUI() {
   $('#setStyle').value = settings.style; $('#setFocus').checked = settings.focus;
   $('#setParticles').value = settings.particles; $('#setBloom').checked = settings.bloom; $('#setTrails').checked = settings.trails;
   $('#setSens').value = settings.sensitivity; $('#camSens').value = settings.sensitivity; $('#setColor').value = settings.colorMode;
+  $('#setHold').value = settings.signHold; $('#holdVal').textContent = (settings.signHold / 1000).toFixed(2) + ' s'; $('#setExtra').checked = settings.extraSigns; $('#setPerf').checked = settings.autoPerf;
   $('#setAuto').checked = settings.autoRotate; $('#setAnimSpeed').value = settings.animSpeed; $('#setHandRot').checked = settings.gestureRotate;
   btnState('anim', S.anim); btnState('labels', S.labels); btnState('sound', settings.sound);
 }
@@ -892,6 +931,9 @@ $('#setColor').onchange = e => { settings.colorMode = e.target.value; cloud.setC
 $('#setAuto').onchange = e => { settings.autoRotate = e.target.checked; saveSettings(); };
 $('#setAnimSpeed').oninput = e => { settings.animSpeed = +e.target.value; saveSettings(); };
 $('#setHandRot').onchange = e => { settings.gestureRotate = e.target.checked; saveSettings(); };
+$('#setHold').oninput = e => { settings.signHold = +e.target.value; saveSettings(); $('#holdVal').textContent = (settings.signHold / 1000).toFixed(2) + ' s'; };
+$('#setExtra').onchange = e => { settings.extraSigns = e.target.checked; saveSettings(); };
+$('#setPerf').onchange = e => { settings.autoPerf = e.target.checked; saveSettings(); };
 $('#setReset').onclick = () => { localStorage.removeItem('blaisevr:custom'); localStorage.removeItem('blaisevr:settings'); location.reload(); };
 
 // welcome

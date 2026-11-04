@@ -28,6 +28,7 @@
   <div id="labels"></div>
   <div id="cursor" hidden><span></span></div>
   <div id="flash"></div>
+  <div id="signRing" hidden><b></b><small></small></div>
 
   <!-- top HUD -->
   <header class="hud">
@@ -232,6 +233,9 @@
       <label class="set chk"><input id="setTrails" type="checkbox" /> Motion trails</label>
       <label class="set chk"><input id="setAuto" type="checkbox" /> Auto-rotate</label>
       <label class="set chk"><input id="setHandRot" type="checkbox" /> Rotate with hand twist</label>
+      <label class="set chk"><input id="setExtra" type="checkbox" /> Command signs (👌 👍 👎 ✌️ 3️⃣ 🤘 🤙)</label>
+      <label class="set">Hold a command sign for <span><input id="setHold" type="range" min="200" max="1200" step="50" /> <b id="holdVal"></b></span></label>
+      <label class="set chk"><input id="setPerf" type="checkbox" /> Lighter graphics automatically if tracking gets slow</label>
       <button id="setReset" class="danger">Reset settings &amp; remove imported models</button>
     </div>
   </div>

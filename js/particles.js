@@ -230,6 +230,7 @@ export class ParticleCloud {
   }
   transformPoint(i, states, out) {
     const pi = this.partAttr[i], s = states[pi];
+    if (!s) { out.set(0, 0, 1e6); return -1; }
     out.set(this.pos[i * 3], this.pos[i * 3 + 1], this.pos[i * 3 + 2]).sub(s.pivot).multiplyScalar(s.scale).applyQuaternion(s.q).add(s.pivot).add(s.t);
     return pi;
   }

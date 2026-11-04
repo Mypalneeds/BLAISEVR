@@ -63,6 +63,8 @@ Hand tracking runs **on your device** (MediaPipe). Video never leaves your compu
 **Smarter webcam and 15 hand signs**
 
 - **Signs:** 🫰 snap (summon), ✊ fist (form, then move it to grab-rotate), ✋ open (explode by how wide your hand is), ☝️ point (select), 🤏 pinch (grab and move), 👌 OK (isolate a part), 👍 explain, 👎 reassemble, ✌️ next model, 3️⃣ three fingers (cut-away), 🤘 rock (switch view), 🤙 shaka (guided tour), 👋 swipe (previous/next), 🙌 two hands (zoom and turn), 🤏🤏 both pinching (pull apart). You can also point with one hand while rotating with a fist in the other.
+- **Fast tracking.** Hand detection runs in a background Web Worker, so the 3D scene can't slow it down. If the browser can't do that, it falls back to the main thread. If tracking still drops below about 18 fps, BlaiseVR automatically lightens the graphics (toggle in ⚙ Settings). The camera panel shows the live FPS and which mode is running.
+- **No accidental commands.** Command signs (👌 👍 👎 ✌️ 3️⃣ 🤘 🤙) must be held for about 0.45 s, and a ring fills on screen to show it's confirming. Movement poses (✋ ✊ ☝️ 🤏) respond instantly. Voting is time-based, so behaviour is the same at 7 fps or 60 fps. You can change the hold time, or switch command signs off, in ⚙ Settings.
 - **Steady tracking.** One-Euro smoothing removes cursor jitter. Each sign must hold for a few frames before it counts, so it doesn't flicker. Pinches are easier to hold than to start.
 - **Knows left from right.** It keeps both hands separate, even when they cross.
 - **🎯 Calibrate (camera panel).** Show an open hand, a fist and a pinch, and BlaiseVR tunes its thresholds to your hand.
@@ -182,6 +184,7 @@ js/models2.js       12 more models: eye, brain, lungs, digestive, flower, plant 
 js/gestures.js      MediaPipe Hand Landmarker (loaded only when you turn on the camera), 13-sign classifier,
                     One-Euro smoothing, pose voting, swipes, light/distance hints, calibration
 js/ao.js, aoWorker.js  Ambient-occlusion bake, run in a Web Worker
+js/handWorker.js    MediaPipe hand tracking in a Web Worker (keeps gestures responsive)
 js/importers.js     .json / .glb / .gltf / .obj / .stl / image / text → model
 sw.js               Offline cache (PWA)
 ```
