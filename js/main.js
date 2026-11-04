@@ -1,0 +1,650 @@
+// BlaiseVR — main app: scene, state, controls, gestures, quiz, voice, recording.
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { AfterimagePass } from 'three/addons/postprocessing/AfterimagePass.js';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { MODELS } from './models.js';
+import { buildModel, TARGET_RADIUS } from './sampler.js';
+import { ParticleCloud } from './particles.js';
+import { HandTracker } from './gestures.js';
+import { fromJSON, from3DFile, fromImage, fromText } from './importers.js';
+
+THREE.ColorManagement.enabled = false; // colours in models are used as-is (sRGB look)
+
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const isMobile = matchMedia('(pointer: coarse)').matches || /Android|iPhone|iPad/i.test(navigator.userAgent);
+
+// ---------------------------------------------------------------- settings
+const DEFAULTS = { particles: isMobile ? 70000 : 150000, bloom: !isMobile, trails: false, sensitivity: 'standard', colorMode: 'parts', autoRotate: true, animSpeed: 1, gestureRotate: true, voiceRate: 1 };
+const settings = { ...DEFAULTS, ...safeJSON(localStorage.getItem('blaisevr:settings')) };
+function safeJSON(s) { try { return JSON.parse(s) || {}; } catch { return {}; } }
+function saveSettings() { try { localStorage.setItem('blaisevr:settings', JSON.stringify(settings)); } catch {} }
+
+// ---------------------------------------------------------------- three.js setup
+const stage = $('#stage');
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', preserveDrawingBuffer: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, isMobile ? 1.5 : 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+renderer.setClearColor(0x000000, 1);
+renderer.xr.enabled = true;
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 200);
+camera.position.set(0, 0.3, 7.5);
+const cloud = new ParticleCloud(settings.particles);
+const pivot = new THREE.Group(); pivot.add(cloud.group); scene.add(pivot);
+
+// faint starfield for depth
+{
+  const g = new THREE.BufferGeometry(), n = 1500, a = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { const r = 40 + Math.random() * 60, t = Math.random() * 6.28, p = Math.acos(2 * Math.random() - 1); a.set([r * Math.sin(p) * Math.cos(t), r * Math.cos(p), r * Math.sin(p) * Math.sin(t)], i * 3); }
+  g.setAttribute('position', new THREE.BufferAttribute(a, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({ color: 0x334466, size: 0.15, sizeAttenuation: true })));
+}
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.6, 0.5, 0.22);
+const trails = new AfterimagePass(0.86);
+composer.addPass(bloom); composer.addPass(trails);
+function applyFx() { bloom.enabled = settings.bloom; trails.enabled = settings.trails; }
+applyFx();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+});
+
+// ---------------------------------------------------------------- state
+const models = [...MODELS];
+loadSavedCustom();
+const S = {
+  idx: 0, built: null, summoned: false, form: 0, formT: 0, explode: 0, explodeT: 0,
+  sel: -1, hover: -1, isolate: false, pulled: new Set(), pullAmt: [],
+  rotY: 0.5, rotX: 0.15, velY: 0, rotXT: 0.15, zoom: 7.5, zoomT: 7.5,
+  cutOn: false, cutAxis: 0, cutW: 0, cutWT: 0.0,
+  labels: false, anim: true, animTime: 0, time: 0, solid: false,
+  demo: false, quiz: null, recording: null, lastInput: performance.now(),
+};
+const cache = new Map();
+function getBuilt(def) {
+  const key = def.id + ':' + settings.particles;
+  if (cache.has(key)) return cache.get(key);
+  const b = buildModel(def, settings.particles);
+  cache.set(key, b); if (cache.size > 5) cache.delete(cache.keys().next().value);
+  return b;
+}
+
+// ---------------------------------------------------------------- model switching
+function loadModel(i, { morph = true, announce = true } = {}) {
+  S.idx = (i + models.length) % models.length;
+  const def = models[S.idx];
+  let built;
+  try { built = getBuilt(def); } catch (e) { toast('Could not build model: ' + e.message, 'err'); console.error(e); return; }
+  S.built = built; cloud.setModel(built, morph && S.summoned);
+  if (settings.colorMode !== 'parts') cloud.setColorMode(settings.colorMode);
+  S.sel = -1; S.hover = -1; S.isolate = false; S.pulled.clear(); S.pullAmt = built.parts.map(() => 0);
+  buildLabels(); updateInfo(); updatePicker();
+  $('#modelName').textContent = def.name;
+  $('#modelMeta').textContent = `${def.category || ''} · ${built.parts.length} parts · ${(built.N / 1000).toFixed(0)}k particles`;
+  if (models[S.idx].id && !models[S.idx].id.startsWith('file-') && !models[S.idx].id.startsWith('img-')) history.replaceState(null, '', '#m=' + encodeURIComponent(def.id));
+  if (announce) toast(`${def.emoji || '✨'} ${def.name}`);
+  if (S.quiz) endQuiz(true);
+}
+const next = () => loadModel(S.idx + 1);
+const prev = () => loadModel(S.idx - 1);
+
+function summon() { S.summoned = true; S.formT = 1; setScene(); }
+function dissolve() { S.summoned = false; S.formT = 0; S.explodeT = 0; select(-1); setScene(); }
+function toggleSummon() { S.summoned ? dissolve() : summon(); }
+function setExplode(v) { if (!S.summoned) summon(); S.explodeT = clamp(v, 0, 1); $('#explode').value = S.explodeT; setScene(); }
+function setScene() {
+  const st = !S.summoned ? 'dissolved' : S.explodeT > 0.05 ? `exploded ${(S.explodeT * 100) | 0}%` : 'formed';
+  $('#sceneState').textContent = st;
+}
+
+// ---------------------------------------------------------------- selection
+function select(i, { speak = false } = {}) {
+  S.sel = i;
+  if (i < 0) S.isolate = false;
+  updateInfo();
+  if (i >= 0) {
+    if (S.quiz?.mode === 'find') checkFind(i);
+    if (speak) speakPart(i);
+  }
+}
+function togglePull(i) {
+  if (i < 0) return;
+  S.pulled.has(i) ? S.pulled.delete(i) : S.pulled.add(i);
+  updateInfo();
+}
+function updateInfo() {
+  const p = S.built?.parts[S.sel], el = $('#info');
+  if (!p) { el.hidden = true; return; }
+  el.hidden = false;
+  $('#infoDot').style.background = p.color;
+  $('#infoName').textContent = p.name;
+  $('#infoModel').textContent = models[S.idx].name;
+  $('#infoDesc').textContent = p.desc || 'No description yet for this part.';
+  $('#infoFact').textContent = p.fact || '';
+  $('#infoFact').hidden = !p.fact;
+  $('#btnPull').textContent = S.pulled.has(S.sel) ? '↩ Put back' : '↗ Pull out';
+  $('#btnIsolate').textContent = S.isolate ? '◎ Show all' : '◎ Isolate';
+}
+
+// ---------------------------------------------------------------- per-frame part transforms
+const tmpQ = new THREE.Quaternion(), tmpV = new THREE.Vector3(), camLocal = new THREE.Vector3();
+let states = [];
+function computeStates() {
+  const parts = S.built.parts, t = S.animTime;
+  const ex = easeInOut(S.explode);
+  camLocal.copy(camera.position).applyMatrix4(new THREE.Matrix4().copy(cloud.points.matrixWorld).invert()).normalize();
+  if (states.length !== parts.length) states = parts.map(() => ({ q: new THREE.Quaternion(), pivot: new THREE.Vector3(), scale: 1, t: new THREE.Vector3(), hl: 0 }));
+  parts.forEach((p, i) => {
+    const s = states[i]; s.q.identity(); s.scale = 1; s.t.set(0, 0, 0); s.pivot.copy(p.pivot);
+    for (const a of p.anims) {
+      const ph = Math.PI * 2 * a.freq * t + a.phase;
+      if (a.type === 'spin') s.q.premultiply(tmpQ.setFromAxisAngle(a.axis, a.speed * t));
+      else if (a.type === 'swing') s.q.premultiply(tmpQ.setFromAxisAngle(a.axis, a.amp * Math.sin(ph)));
+      else if (a.type === 'bob') s.t.addScaledVector(a.axis, a.amp * Math.sin(ph));
+      else if (a.type === 'pulse') s.scale *= 1 + a.amp * Math.pow(Math.max(0, Math.sin(ph)), 3) * 2 - a.amp * 0.5;
+    }
+    s.t.addScaledVector(p.explode, ex);
+    S.pullAmt[i] += ((S.pulled.has(i) ? 1 : 0) - S.pullAmt[i]) * 0.08;
+    if (S.pullAmt[i] > 0.001) {
+      tmpV.copy(p.explode).normalize().multiplyScalar(0.6).addScaledVector(camLocal, 1.6);
+      s.t.addScaledVector(tmpV, easeInOut(S.pullAmt[i]));
+    }
+    s.hl = S.sel === i ? 2 : S.hover === i ? 1 : 0;
+  });
+  return states;
+}
+const easeInOut = x => x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+
+// ---------------------------------------------------------------- picking & labels
+const proj = new THREE.Vector3();
+function pickAt(cx, cy) {
+  if (!S.built || S.form < 0.6) return -1;
+  const W = innerWidth, H = innerHeight, mw = cloud.points.matrixWorld;
+  const cutN = cutNormal();
+  let best = -1, bestZ = 9, near = -1, nearD = 48 * 48;
+  for (const i of cloud.pickIdx) {
+    const pi = cloud.transformPoint(i, states, proj);
+    if (S.isolate && pi !== S.sel) continue;
+    if (S.cutOn && proj.dot(cutN) > S.cutW) continue;
+    proj.applyMatrix4(mw).project(camera);
+    if (proj.z > 1) continue;
+    const dx = (proj.x * .5 + .5) * W - cx, dy = (-proj.y * .5 + .5) * H - cy, d2 = dx * dx + dy * dy;
+    if (d2 < 20 * 20 && proj.z < bestZ) { bestZ = proj.z; best = pi; }
+    if (d2 < nearD) { nearD = d2; near = pi; }
+  }
+  return best >= 0 ? best : near;
+}
+let labelEls = [];
+function buildLabels() {
+  const box = $('#labels'); box.innerHTML = '';
+  labelEls = S.built.parts.map((p, i) => {
+    const d = document.createElement('div'); d.className = 'label'; d.innerHTML = `<i style="background:${p.color}"></i>${escapeHTML(p.name)}`;
+    d.onclick = () => select(i, { speak: false }); box.appendChild(d); return d;
+  });
+}
+function updateLabels() {
+  const show = S.form > 0.8 && (S.labels || S.explode > 0.35);
+  const mw = cloud.points.matrixWorld, W = innerWidth, H = innerHeight;
+  S.built.parts.forEach((p, i) => {
+    const el = labelEls[i]; if (!el) return;
+    const vis = (show || S.sel === i) && !(S.isolate && S.sel !== i);
+    if (!vis) { el.style.opacity = 0; el.style.pointerEvents = 'none'; return; }
+    const s = states[i];
+    proj.copy(p.centroid).sub(s.pivot).multiplyScalar(s.scale).applyQuaternion(s.q).add(s.pivot).add(s.t).applyMatrix4(mw).project(camera);
+    if (proj.z > 1) { el.style.opacity = 0; return; }
+    el.style.opacity = S.sel === i ? 1 : 0.85; el.style.pointerEvents = 'auto';
+    el.classList.toggle('sel', S.sel === i);
+    el.style.transform = `translate(${(proj.x * .5 + .5) * W}px, ${(-proj.y * .5 + .5) * H}px) translate(-50%, -140%)`;
+  });
+}
+const escapeHTML = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// ---------------------------------------------------------------- cut-away
+const AXES = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [-1, 0, 0]];
+const AXIS_NAMES = ['side (X)', 'top (Y)', 'front (Z)', 'other side'];
+const cutNormal = () => new THREE.Vector3(...AXES[S.cutAxis]);
+function toggleCut(on = !S.cutOn) { S.cutOn = on; if (on && !S.summoned) summon(); $('#cutBar').hidden = !on; btnState('cut', on); toast(on ? `Cut-away on · slicing ${AXIS_NAMES[S.cutAxis]} · move the slider or your mouse/hand` : 'Cut-away off'); }
+function cycleCutAxis(d) { S.cutAxis = (S.cutAxis + d + AXES.length) % AXES.length; toast(`Slice from ${AXIS_NAMES[S.cutAxis]}`); }
+
+// ---------------------------------------------------------------- render loop
+let last = performance.now(), frame = 0;
+renderer.setAnimationLoop(loop);
+function loop() {
+  const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000); last = now; frame++;
+  S.time += dt; if (S.anim) S.animTime += dt * settings.animSpeed;
+  S.form += (S.formT - S.form) * Math.min(1, dt * (S.formT > S.form ? 1.6 : 2.4));
+  S.explode += (S.explodeT - S.explode) * Math.min(1, dt * 5);
+  S.zoom += (S.zoomT - S.zoom) * Math.min(1, dt * 6);
+  S.cutW += (S.cutWT - S.cutW) * Math.min(1, dt * 10);
+  const U = cloud.uniforms;
+  U.uTime.value = S.time; U.uForm.value = S.form;
+  U.uMorph.value = Math.min(1, U.uMorph.value + dt * 0.75);
+  U.uHasSel.value = S.sel >= 0 ? 1 : 0; U.uDim.value = S.isolate ? 0 : 0.28;
+  U.uCutOn.value = S.cutOn ? 1 : 0; const cn = cutNormal(); U.uCut.value.set(cn.x, cn.y, cn.z, S.cutW);
+
+  if (!dragging) { S.rotY += (S.velY + (settings.autoRotate && !S.cutOn && S.sel < 0 ? 0.18 : 0)) * dt; S.velY *= Math.pow(0.12, dt); }
+  S.rotX += (S.rotXT - S.rotX) * Math.min(1, dt * 4);
+  pivot.rotation.set(S.rotX, S.rotY, 0);
+  if (!renderer.xr.isPresenting) { camera.position.set(0, 0.3, S.zoom * (1 + 0.28 * S.explode) * Math.max(1, 0.8 / camera.aspect)); camera.lookAt(0, 0, 0); }
+  pivot.updateMatrixWorld();
+
+  if (S.built) {
+    cloud.applyPartStates(computeStates());
+    if (frame % 3 === 0 && pointer.inside && !dragging && !handCursor.active) S.hover = pickAt(pointer.x, pointer.y);
+    updateLabels();
+  }
+  if (S.demo) demoStep(dt);
+  if (renderer.xr.isPresenting) renderer.render(scene, camera); else composer.render();
+}
+
+// ---------------------------------------------------------------- mouse / touch
+const pointer = { x: 0, y: 0, inside: false };
+let dragging = false, downAt = null, lastP = null, touches = new Map(), pinchStart = null;
+const cv = renderer.domElement;
+cv.addEventListener('pointerdown', e => {
+  cv.setPointerCapture(e.pointerId); touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  downAt = { x: e.clientX, y: e.clientY, t: performance.now() }; lastP = { ...downAt }; dragging = false; activity();
+  if (touches.size === 2) { const [a, b] = [...touches.values()]; pinchStart = { d: Math.hypot(a.x - b.x, a.y - b.y), z: S.zoomT }; }
+});
+cv.addEventListener('pointermove', e => {
+  pointer.x = e.clientX; pointer.y = e.clientY; pointer.inside = true;
+  if (touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (touches.size === 2 && pinchStart) { const [a, b] = [...touches.values()]; S.zoomT = clamp(pinchStart.z * pinchStart.d / Math.hypot(a.x - b.x, a.y - b.y), 3, 16); dragging = true; return; }
+  if (S.cutOn && !downAt) S.cutWT = (e.clientX / innerWidth * 2 - 1) * -TARGET_RADIUS * 1.05;
+  if (!downAt) return;
+  const dx = e.clientX - lastP.x, dy = e.clientY - lastP.y;
+  if (Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 5) dragging = true;
+  if (dragging) { S.rotY += dx * 0.008; S.velY = dx * 0.5; S.rotXT = clamp(S.rotXT + dy * 0.006, -1.3, 1.3); S.rotX = S.rotXT; }
+  lastP = { x: e.clientX, y: e.clientY };
+});
+const endPtr = e => {
+  touches.delete(e.pointerId); if (touches.size < 2) pinchStart = null;
+  if (downAt && !dragging && touches.size === 0) {
+    if (!S.summoned) summon();
+    else { const p = pickAt(e.clientX, e.clientY); if (p >= 0) select(p === S.sel ? -1 : p, { speak: false }); else select(-1); }
+  }
+  if (touches.size === 0) { downAt = null; setTimeout(() => dragging = false, 0); }
+};
+cv.addEventListener('pointerup', endPtr); cv.addEventListener('pointercancel', endPtr);
+cv.addEventListener('pointerleave', () => { pointer.inside = false; S.hover = -1; });
+cv.addEventListener('dblclick', e => { const p = pickAt(e.clientX, e.clientY); if (p >= 0) togglePull(p); });
+cv.addEventListener('wheel', e => {
+  e.preventDefault(); activity();
+  if (e.ctrlKey || e.metaKey) S.zoomT = clamp(S.zoomT * (1 + e.deltaY * 0.01), 3, 16);
+  else if (e.shiftKey) S.zoomT = clamp(S.zoomT * (1 + e.deltaY * 0.0015), 3, 16);
+  else setExplode(S.explodeT - e.deltaY * 0.0012);
+}, { passive: false });
+
+// ---------------------------------------------------------------- keyboard
+const KEYS = {
+  ' ': toggleSummon, f: () => { summon(); setExplode(0); }, o: () => setExplode(S.explodeT > 0.5 ? 0 : 1), e: () => setExplode(S.explodeT > 0.5 ? 0 : 1),
+  v: next, arrowright: next, arrowleft: prev, arrowup: () => setExplode(S.explodeT + 0.1), arrowdown: () => setExplode(S.explodeT - 0.1),
+  b: () => togglePicker(), g: () => toggleSetting('gestureRotate', 'Hand rotate'), x: () => toggleCut(), ',': () => cycleCutAxis(-1), '.': () => cycleCutAxis(1),
+  r: () => { toggleSetting('autoRotate', 'Auto-rotate'); }, l: () => { S.labels = !S.labels; btnState('labels', S.labels); }, t: () => { toggleSetting('trails', 'Trails'); applyFx(); },
+  s: () => toggleSolid(), a: () => { S.anim = !S.anim; btnState('anim', S.anim); toast(S.anim ? 'Animation on' : 'Animation paused'); },
+  q: () => S.quiz ? endQuiz(true) : startQuiz(), m: () => toggleVoice(), k: () => toggleRecord(), i: () => speakPart(S.sel), c: () => toggleCamera(), d: () => toggleDemo(),
+  h: () => toggleDlg('#help'), '?': () => toggleDlg('#help'), n: () => openText(), u: () => $('#file').click(), p: () => screenshot(), z: () => toggleIsolate(),
+  '+': () => S.zoomT = clamp(S.zoomT * 0.85, 3, 16), '=': () => S.zoomT = clamp(S.zoomT * 0.85, 3, 16), '-': () => S.zoomT = clamp(S.zoomT * 1.15, 3, 16), '0': () => { S.zoomT = 7.5; S.rotXT = 0.15; },
+  escape: () => { if (!closeDialogs()) { if (S.quiz) endQuiz(true); else select(-1); } },
+};
+addEventListener('keydown', e => {
+  if (e.target.closest('input, textarea, select') || e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key.toLowerCase();
+  if (/^[1-9]$/.test(k) && models[+k - 1]) { loadModel(+k - 1); return; }
+  const fn = KEYS[k]; if (!fn) return;
+  e.preventDefault(); activity(); fn();
+});
+function toggleSetting(key, label) { settings[key] = !settings[key]; saveSettings(); syncSettingsUI(); toast(`${label} ${settings[key] ? 'on' : 'off'}`); }
+function toggleSolid() { S.solid = !S.solid; cloud.setSolid(S.solid); btnState('solid', S.solid); toast(S.solid ? 'Solid view' : 'Glow view'); }
+function toggleIsolate() { if (S.sel < 0) { toast('Select a part first'); return; } S.isolate = !S.isolate; updateInfo(); }
+
+// ---------------------------------------------------------------- hand gestures
+const tracker = new HandTracker($('#camVideo'), $('#camOverlay'));
+tracker.sensitivity = settings.sensitivity;
+const handCursor = { active: false, x: 0, y: 0 };
+const G = { pose: null, count: 0, dwellPart: -1, dwellStart: 0, lastNext: 0, two: null };
+tracker.onFrame = ({ hands, snap }) => {
+  const cur = $('#cursor');
+  $('#handState').textContent = hands.length ? `${hands.length} hand${hands.length > 1 ? 's' : ''}` : 'no hand';
+  if (!hands.length) { handCursor.active = false; cur.hidden = true; G.pose = null; G.two = null; $('#gestureName').textContent = '—'; return; }
+  activity();
+  if (snap) { toggleSummon(); flash('🫰 Snap!'); }
+  if (hands.length >= 2) {
+    const d = Math.hypot(hands[0].palm.x - hands[1].palm.x, hands[0].palm.y - hands[1].palm.y);
+    if (!G.two) G.two = { d, z: S.zoomT };
+    S.zoomT = clamp(G.two.z * G.two.d / Math.max(0.05, d), 3, 16);
+    $('#gestureName').textContent = '🙌 zoom'; cur.hidden = true; handCursor.active = false; return;
+  }
+  G.two = null;
+  const h = hands[0];
+  if (h.pose === G.pose) G.count++; else { G.pose = h.pose; G.count = 1; }
+  const holding = G.count >= 3, onset = G.count === 3;
+  $('#gestureName').textContent = { fist: '✊ form', open: '✋ explode', partial: '🖐 explode', point: '☝️ point', pinch: '🤏 pinch', victory: '✌️ next', thumb: '👍 explain' }[h.pose] || h.pose;
+  $('#openBar').style.width = `${(h.openness * 100) | 0}%`; $('#openPct').textContent = `${(h.openness * 100) | 0}%`;
+
+  // cursor follows the index fingertip (mirrored, central region mapped to full screen)
+  const mx = clamp(((1 - h.tip.x) - 0.15) / 0.7, 0, 1) * innerWidth, my = clamp((h.tip.y - 0.12) / 0.7, 0, 1) * innerHeight;
+  handCursor.x += (mx - handCursor.x) * 0.5; handCursor.y += (my - handCursor.y) * 0.5;
+  const showCursor = h.pose === 'point' || h.pose === 'pinch';
+  handCursor.active = showCursor; cur.hidden = !showCursor;
+  if (showCursor) { cur.style.transform = `translate(${handCursor.x}px, ${handCursor.y}px)`; cur.classList.toggle('pinch', h.pose === 'pinch'); }
+
+  if (!holding) return;
+  switch (h.pose) {
+    case 'fist': if (!S.summoned) summon(); if (S.explodeT !== 0) setExplode(0); break;
+    case 'open': case 'partial': if (S.summoned && !S.cutOn) setExplode(clamp((h.openness - 0.35) / 0.5, 0, 1)); break;
+    case 'point': {
+      const p = pickAt(handCursor.x, handCursor.y); S.hover = p;
+      if (p !== G.dwellPart) { G.dwellPart = p; G.dwellStart = performance.now(); }
+      else if (p >= 0 && p !== S.sel && performance.now() - G.dwellStart > 650) select(p);
+      $('#cursor').style.setProperty('--dwell', p >= 0 && p !== S.sel ? Math.min(1, (performance.now() - G.dwellStart) / 650) : 0);
+      break;
+    }
+    case 'pinch': if (onset) { const p = S.hover >= 0 ? S.hover : S.sel; if (p >= 0) { select(p); togglePull(p); } } break;
+    case 'victory': if (onset && performance.now() - G.lastNext > 1500) { G.lastNext = performance.now(); next(); } break;
+    case 'thumb': if (onset) speakPart(S.sel); break;
+  }
+  if (S.cutOn && (h.pose === 'open' || h.pose === 'partial')) S.cutWT = ((1 - h.palm.x) * 2 - 1) * -TARGET_RADIUS * 1.3;
+  if (settings.gestureRotate && ['open', 'partial', 'fist'].includes(h.pose)) {
+    const r = h.roll, dz = 0.22;
+    S.velY = Math.abs(r) > dz ? -(r - Math.sign(r) * dz) * 3 : S.velY * 0.9;
+    S.rotXT = clamp((h.palm.y - 0.5) * 1.6, -1, 1);
+  }
+};
+async function toggleCamera(force) {
+  const on = force ?? !tracker.running;
+  if (!on) { tracker.stop(); $('#cam').hidden = true; btnState('camera', false); $('#cursor').hidden = true; return; }
+  $('#cam').hidden = false; $('#camStatus').textContent = 'Starting camera…'; btnState('camera', true);
+  try {
+    toast('Loading hand tracking… (first time takes a few seconds)');
+    await tracker.start();
+    $('#camStatus').textContent = 'Tracking on-device';
+    toast('Camera on · snap 🫰 or make a fist ✊ to summon');
+  } catch (e) {
+    console.error(e); tracker.stop(); $('#cam').hidden = true; btnState('camera', false);
+    toast('Camera unavailable: ' + (e.message || e.name) + ' — mouse, touch and keys still work.', 'err');
+  }
+}
+
+// ---------------------------------------------------------------- voice: speak + commands (Web Speech API, free & built-in)
+function speak(text) {
+  if (!('speechSynthesis' in window) || !text) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text); u.rate = settings.voiceRate; u.pitch = 1;
+  const v = speechSynthesis.getVoices().find(v => /en[-_](NG|GB|US)/i.test(v.lang) && /natural|google|samantha|daniel/i.test(v.name)) || speechSynthesis.getVoices().find(v => /^en/i.test(v.lang));
+  if (v) u.voice = v;
+  speechSynthesis.speak(u);
+}
+function speakPart(i) {
+  const p = S.built?.parts[i];
+  if (p) { speak(`${p.name}. ${p.desc} ${p.fact || ''}`); flash('🔊 ' + p.name); }
+  else { const d = models[S.idx]; speak(`${d.name}. ${d.about || ''} Point at a part to learn more.`); flash('🔊 ' + d.name); }
+}
+let recog = null;
+function toggleVoice() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { toast('Voice commands need Chrome or Edge. Speaking still works everywhere.', 'err'); return; }
+  if (recog) { recog.onend = null; recog.stop(); recog = null; btnState('voice', false); toast('Voice off'); return; }
+  recog = new SR(); recog.lang = 'en-US'; recog.continuous = true; recog.interimResults = false;
+  recog.onresult = e => { const txt = e.results[e.results.length - 1][0].transcript.trim().toLowerCase(); handleVoice(txt); };
+  recog.onerror = e => { if (e.error === 'not-allowed') { toast('Microphone blocked', 'err'); recog = null; btnState('voice', false); } };
+  recog.onend = () => { if (recog) try { recog.start(); } catch {} };
+  recog.start(); btnState('voice', true);
+  toast('🎙 Listening: try "explode", "next", "show the heart", "what is the aorta", "quiz"');
+}
+function handleVoice(t) {
+  flash('🎙 “' + t + '”'); activity();
+  const has = (...w) => w.some(x => t.includes(x));
+  // a model by name?
+  const mi = models.findIndex(m => t.includes(m.name.toLowerCase()) || t.includes(m.id) || m.name.toLowerCase().split(/[ ,()]+/).some(w => w.length > 3 && t.includes(w) && has('show', 'open', 'load', 'go to')));
+  if (has('show', 'open', 'load', 'go to') && mi >= 0) return loadModel(mi);
+  // a part by name?
+  const parts = S.built.parts;
+  const pi = parts.findIndex(p => t.includes(p.name.toLowerCase().replace(/\(.*?\)/g, '').trim()));
+  if (pi >= 0) { select(pi); if (has('pull', 'take out', 'remove')) togglePull(pi); else if (has('isolate', 'only')) { S.isolate = true; updateInfo(); } else speakPart(pi); return; }
+  if (has('explode', 'open up', 'take apart', 'break')) return setExplode(1);
+  if (has('form', 'assemble', 'close', 'put together', 'rebuild')) return setExplode(0);
+  if (has('dissolve', 'vanish', 'disappear', 'hide')) return dissolve();
+  if (has('summon', 'appear', 'start')) return summon();
+  if (has('next')) return next();
+  if (has('previous', 'back')) return prev();
+  if (has('quiz', 'test me')) return startQuiz();
+  if (has('cut', 'slice')) return toggleCut();
+  if (has('label')) { S.labels = !S.labels; return; }
+  if (has('solid')) return toggleSolid();
+  if (has('stop', 'pause')) { S.anim = false; settings.autoRotate = false; return; }
+  if (has('play', 'animate', 'run')) { S.anim = true; return; }
+  if (has('rotate', 'spin')) { S.velY = 2.5; return; }
+  if (has('zoom in', 'closer')) { S.zoomT = clamp(S.zoomT * 0.75, 3, 16); return; }
+  if (has('zoom out', 'further')) { S.zoomT = clamp(S.zoomT * 1.3, 3, 16); return; }
+  if (has('what is this', 'explain', 'tell me', 'describe')) return speakPart(S.sel);
+  if (has('demo')) return toggleDemo();
+}
+
+// ---------------------------------------------------------------- quiz (multiple choice + "find it" with your hand)
+function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+function startQuiz() {
+  const parts = S.built.parts.map((p, i) => ({ ...p, i })).filter(p => p.desc);
+  if (parts.length < 3) { toast('This model needs at least 3 described parts for a quiz', 'err'); return; }
+  if (!S.summoned) summon();
+  const pool = shuffle(parts.slice());
+  const qs = pool.slice(0, Math.min(6, pool.length)).map((p, k) => k % 3 === 2
+    ? { mode: 'find', target: p.i, text: `Find the ${p.name}`, hint: p.desc }
+    : { mode: 'mc', target: p.i, text: p.desc.split(/(?<=\.)\s/)[0], options: shuffle([p, ...shuffle(parts.filter(o => o.i !== p.i && o.name !== p.name)).slice(0, 3)]).map(o => ({ name: o.name, i: o.i })) });
+  S.quiz = { qs, n: 0, score: 0, mode: null };
+  showQuestion();
+}
+function showQuestion() {
+  const Q = S.quiz, q = Q.qs[Q.n], box = $('#quiz');
+  if (!q) return finishQuiz();
+  Q.mode = q.mode; select(-1);
+  $('#quizProgress').textContent = `Question ${Q.n + 1} of ${Q.qs.length} · score ${Q.score}`;
+  if (q.mode === 'mc') {
+    box.hidden = false; $('#findBanner').hidden = true;
+    $('#quizQ').textContent = `Which part is this? “${q.text}”`;
+    $('#quizOpts').innerHTML = '';
+    q.options.forEach(o => { const b = document.createElement('button'); b.textContent = o.name; b.onclick = () => answer(o.i === q.target, b); $('#quizOpts').appendChild(b); });
+  } else {
+    box.hidden = true; $('#findBanner').hidden = false;
+    $('#findText').textContent = `🎯 ${q.text}`; $('#findHint').textContent = 'Point ☝️ and hold, or click it. Hint: ' + q.hint;
+    Q.findStart = performance.now(); setExplode(0.6);
+    clearTimeout(Q.timer); Q.timer = setTimeout(() => { if (S.quiz?.mode === 'find') { toast(`Time up — it was the ${S.built.parts[q.target].name}`, 'err'); select(q.target); setTimeout(() => nextQ(), 1800); } }, 30000);
+  }
+}
+function answer(ok, btn) {
+  const q = S.quiz.qs[S.quiz.n];
+  $$('#quizOpts button').forEach(b => { b.disabled = true; if (b.textContent === S.built.parts[q.target].name) b.classList.add('right'); });
+  if (ok) { S.quiz.score++; flash('✅ Correct!'); } else { btn.classList.add('wrong'); flash('❌ Not quite'); }
+  select(q.target); setTimeout(nextQ, 1500);
+}
+function checkFind(i) {
+  const q = S.quiz.qs[S.quiz.n]; if (S.quiz.mode !== 'find') return;
+  S.quiz.mode = 'wait'; clearTimeout(S.quiz.timer);
+  if (i === q.target) { S.quiz.score++; flash('✅ Found it!'); } else { flash(`❌ That's the ${S.built.parts[i].name}`); setTimeout(() => select(q.target), 900); }
+  setTimeout(nextQ, 1800);
+}
+function nextQ() { if (!S.quiz) return; S.quiz.n++; showQuestion(); }
+function finishQuiz() {
+  const { score, qs } = S.quiz, key = 'blaisevr:best:' + models[S.idx].id;
+  const best = Math.max(score, +(localStorage.getItem(key) || 0)); try { localStorage.setItem(key, best); } catch {}
+  $('#findBanner').hidden = true; const box = $('#quiz'); box.hidden = false;
+  $('#quizProgress').textContent = 'Finished';
+  $('#quizQ').textContent = `You scored ${score} / ${qs.length}${score === qs.length ? ' — perfect! 🏆' : ''}  ·  best: ${best}`;
+  $('#quizOpts').innerHTML = '<button id="quizAgain">Play again</button><button id="quizClose">Close</button>';
+  $('#quizAgain').onclick = startQuiz; $('#quizClose').onclick = () => endQuiz(true);
+  speak(`You scored ${score} out of ${qs.length}.`);
+  S.quiz.mode = 'done';
+}
+function endQuiz(hide) { if (S.quiz) clearTimeout(S.quiz.timer); S.quiz = null; if (hide) { $('#quiz').hidden = true; $('#findBanner').hidden = true; } }
+
+// ---------------------------------------------------------------- recording & screenshots (free, in-browser)
+function toggleRecord() {
+  if (S.recording) { S.recording.stop(); return; }
+  if (!window.MediaRecorder) { toast('Recording not supported in this browser', 'err'); return; }
+  const stream = cv.captureStream(60);
+  const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'].find(t => MediaRecorder.isTypeSupported(t)) || '';
+  const rec = new MediaRecorder(stream, type ? { mimeType: type, videoBitsPerSecond: 8e6 } : {}); const chunks = [];
+  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  rec.onstop = () => {
+    const blob = new Blob(chunks, { type: rec.mimeType || 'video/webm' });
+    download(blob, `blaisevr-${models[S.idx].id}.${/mp4/.test(blob.type) ? 'mp4' : 'webm'}`);
+    S.recording = null; btnState('record', false); document.body.classList.remove('rec'); toast('🎬 Video saved');
+  };
+  rec.start(); S.recording = rec; btnState('record', true); document.body.classList.add('rec'); toast('⏺ Recording… press K or the button again to stop');
+}
+function screenshot() {
+  composer.render();
+  cv.toBlob(b => { download(b, `blaisevr-${models[S.idx].id}.png`); toast('📸 Screenshot saved'); });
+}
+function download(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }
+
+// ---------------------------------------------------------------- demo mode
+const demo = { t: 0, step: 0 };
+function toggleDemo(on = !S.demo) { S.demo = on; demo.t = 0; demo.step = 0; btnState('demo', on); toast(on ? '▶ Demo mode — any key or click stops it' : 'Demo stopped'); }
+function demoStep(dt) {
+  demo.t += dt; const steps = [
+    [0.1, () => { if (!S.summoned) summon(); setExplode(0); select(-1); }],
+    [3.5, () => setExplode(1)],
+    [5.5, () => { const i = Math.floor(Math.random() * S.built.parts.length); select(i); }],
+    [9.5, () => { const i = Math.floor(Math.random() * S.built.parts.length); select(i); togglePull(i); }],
+    [13, () => { S.pulled.clear(); select(-1); setExplode(0); }],
+    [15.5, () => next()],
+  ];
+  const s = steps[demo.step];
+  if (s && demo.t > s[0]) { s[1](); demo.step++; }
+  if (demo.step >= steps.length) { demo.t = 0; demo.step = 0; }
+}
+function activity() { S.lastInput = performance.now(); }
+addEventListener('pointerdown', () => { if (S.demo) toggleDemo(false); }, true);
+addEventListener('keydown', e => { if (S.demo && e.key.toLowerCase() !== 'd') toggleDemo(false); }, true);
+setInterval(() => { if (!S.demo && !S.quiz && S.summoned && performance.now() - S.lastInput > 90000 && $('#welcome').hidden) toggleDemo(true); }, 5000);
+
+// ---------------------------------------------------------------- importing: drag & drop / file picker / text
+async function importFile(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  toast(`Importing ${file.name}…`);
+  try {
+    let def;
+    if (ext === 'json') { def = fromJSON(await file.text(), file.name); saveCustom(def); }
+    else if (['glb', 'gltf', 'obj', 'stl'].includes(ext)) def = await from3DFile(file);
+    else if (/^image\//.test(file.type)) def = await fromImage(file);
+    else throw new Error('Drop a .json, .glb, .gltf, .obj, .stl or an image');
+    addModel(def);
+  } catch (e) { console.error(e); toast('Import failed: ' + e.message, 'err'); }
+}
+function addModel(def) {
+  const existing = models.findIndex(m => m.id === def.id);
+  if (existing >= 0) { models[existing] = def; [...cache.keys()].filter(k => k.startsWith(def.id + ':')).forEach(k => cache.delete(k)); }
+  else models.push(def);
+  buildPicker(); if (!S.summoned) summon(); loadModel(existing >= 0 ? existing : models.length - 1);
+}
+function saveCustom(def) {
+  try { const list = safeJSON(localStorage.getItem('blaisevr:custom')); list[def.id] = def; const s = JSON.stringify(list); if (s.length < 3e6) localStorage.setItem('blaisevr:custom', s); } catch {}
+}
+function loadSavedCustom() { const list = safeJSON(localStorage.getItem('blaisevr:custom')); Object.values(list).forEach(d => { if (d?.parts) models.push(d); }); }
+let dragDepth = 0;
+addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; $('#drop').hidden = false; });
+addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('#drop').hidden = true; } });
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', e => { e.preventDefault(); dragDepth = 0; $('#drop').hidden = true; [...e.dataTransfer.files].forEach(importFile); });
+$('#file').addEventListener('change', e => { [...e.target.files].forEach(importFile); e.target.value = ''; });
+function openText() { toggleDlg('#textDlg', true); setTimeout(() => $('#textIn').focus(), 50); }
+$('#textGo').onclick = () => { const t = $('#textIn').value.trim(); if (!t) return; toggleDlg('#textDlg', false); addModel(fromText(t)); };
+$('#textIn').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#textGo').click(); } });
+
+// ---------------------------------------------------------------- UI wiring
+function toast(msg, kind = '') {
+  const t = document.createElement('div'); t.className = 'toast ' + kind; t.textContent = msg; $('#toasts').appendChild(t);
+  setTimeout(() => t.classList.add('out'), 3200); setTimeout(() => t.remove(), 3700);
+  while ($('#toasts').children.length > 4) $('#toasts').firstChild.remove();
+}
+function flash(msg) { const f = $('#flash'); f.textContent = msg; f.classList.remove('show'); void f.offsetWidth; f.classList.add('show'); }
+function btnState(act, on) { $$(`[data-act="${act}"]`).forEach(b => b.classList.toggle('on', !!on)); }
+function toggleDlg(sel, force) { const d = $(sel); const show = force ?? d.hidden; closeDialogs(); d.hidden = !show; }
+function closeDialogs() { let any = false; $$('.dlg').forEach(d => { if (!d.hidden) { d.hidden = true; any = true; } }); return any; }
+function togglePicker(force) { const p = $('#picker'); p.classList.toggle('open', force ?? !p.classList.contains('open')); }
+
+function buildPicker() {
+  const list = $('#pickerList'); list.innerHTML = '';
+  models.forEach((m, i) => {
+    const b = document.createElement('button'); b.className = 'card'; b.dataset.i = i;
+    b.innerHTML = `<span class="em">${m.emoji || '✨'}</span><span class="nm">${escapeHTML(m.name)}</span><span class="ct">${escapeHTML(m.category || '')}</span>`;
+    b.onclick = () => { if (!S.summoned) summon(); loadModel(i); };
+    list.appendChild(b);
+  });
+  updatePicker();
+}
+function updatePicker() { $$('#pickerList .card').forEach(c => c.classList.toggle('on', +c.dataset.i === S.idx)); $('#pickerList .card.on')?.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' }); }
+
+const ACTIONS = {
+  snap: toggleSummon, form: () => { summon(); setExplode(0); }, explodeBtn: () => setExplode(S.explodeT > 0.5 ? 0 : 1), next, prev,
+  cut: () => toggleCut(), anim: KEYS.a, labels: KEYS.l, solid: toggleSolid, quiz: KEYS.q, voice: toggleVoice, record: toggleRecord, camera: () => toggleCamera(),
+  help: () => toggleDlg('#help'), settings: () => toggleDlg('#settings'), browse: () => togglePicker(), text: openText, import: () => $('#file').click(),
+  demo: () => toggleDemo(), shot: screenshot, share: share, speak: () => speakPart(S.sel), pull: () => togglePull(S.sel), isolate: toggleIsolate, closeInfo: () => select(-1),
+  closeDlg: () => closeDialogs(), quizClose: () => endQuiz(true), colors: cycleColors,
+};
+document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (b && ACTIONS[b.dataset.act]) { activity(); ACTIONS[b.dataset.act](); } });
+$('#explode').addEventListener('input', e => setExplode(+e.target.value));
+$('#cutSlider').addEventListener('input', e => S.cutWT = +e.target.value);
+$('#cutAxisBtn').onclick = () => cycleCutAxis(1);
+
+const COLOR_MODES = ['parts', 'rainbow', 'heat', 'ice', 'gold'];
+function cycleColors() { settings.colorMode = COLOR_MODES[(COLOR_MODES.indexOf(settings.colorMode) + 1) % COLOR_MODES.length]; cloud.setColorMode(settings.colorMode); saveSettings(); syncSettingsUI(); toast('Colours: ' + settings.colorMode); }
+async function share() {
+  const url = location.href;
+  try { if (navigator.share) await navigator.share({ title: 'BlaiseVR — ' + models[S.idx].name, url }); else { await navigator.clipboard.writeText(url); toast('🔗 Link copied'); } } catch {}
+}
+
+// settings dialog
+function syncSettingsUI() {
+  $('#setParticles').value = settings.particles; $('#setBloom').checked = settings.bloom; $('#setTrails').checked = settings.trails;
+  $('#setSens').value = settings.sensitivity; $('#camSens').value = settings.sensitivity; $('#setColor').value = settings.colorMode;
+  $('#setAuto').checked = settings.autoRotate; $('#setAnimSpeed').value = settings.animSpeed; $('#setHandRot').checked = settings.gestureRotate;
+  btnState('anim', S.anim); btnState('labels', S.labels);
+}
+$('#setParticles').onchange = e => { settings.particles = +e.target.value; saveSettings(); cache.clear(); loadModel(S.idx, { morph: false, announce: false }); toast(`${(settings.particles / 1000) | 0}k particles`); };
+$('#setBloom').onchange = e => { settings.bloom = e.target.checked; saveSettings(); applyFx(); };
+$('#setTrails').onchange = e => { settings.trails = e.target.checked; saveSettings(); applyFx(); };
+const setSens = v => { settings.sensitivity = v; tracker.sensitivity = v; saveSettings(); syncSettingsUI(); };
+$('#setSens').onchange = e => setSens(e.target.value); $('#camSens').onchange = e => setSens(e.target.value);
+$('#setColor').onchange = e => { settings.colorMode = e.target.value; cloud.setColorMode(settings.colorMode); saveSettings(); };
+$('#setAuto').onchange = e => { settings.autoRotate = e.target.checked; saveSettings(); };
+$('#setAnimSpeed').oninput = e => { settings.animSpeed = +e.target.value; saveSettings(); };
+$('#setHandRot').onchange = e => { settings.gestureRotate = e.target.checked; saveSettings(); };
+$('#setReset').onclick = () => { localStorage.removeItem('blaisevr:custom'); localStorage.removeItem('blaisevr:settings'); location.reload(); };
+
+// welcome
+$('#startCam').onclick = () => { $('#welcome').hidden = true; summon(); toggleCamera(true); };
+$('#startNoCam').onclick = () => { $('#welcome').hidden = true; summon(); toast('Drag to rotate · scroll to explode · click a part · H for help'); };
+
+// WebXR (VR headsets like Quest open it in their browser — free)
+if (navigator.xr?.isSessionSupported) navigator.xr.isSessionSupported('immersive-vr').then(ok => {
+  if (!ok) return;
+  const btn = VRButton.createButton(renderer); btn.id = 'vrBtn'; document.body.appendChild(btn);
+  renderer.xr.addEventListener('sessionstart', () => { pivot.position.set(0, 1.4, -2.2); pivot.scale.setScalar(0.35); summon(); });
+  renderer.xr.addEventListener('sessionend', () => { pivot.position.set(0, 0, 0); pivot.scale.setScalar(1); });
+}).catch(() => {});
+
+// PWA (works offline after first visit)
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('./sw.js').catch(() => {});
+
+// ---------------------------------------------------------------- boot
+buildPicker(); syncSettingsUI();
+const hashId = decodeURIComponent((location.hash.match(/m=([^&]+)/) || [])[1] || '');
+const start = Math.max(0, models.findIndex(m => m.id === hashId));
+loadModel(start, { morph: false, announce: false });
+setScene();
+if (new URLSearchParams(location.search).has('skip')) { $('#welcome').hidden = true; summon(); }
+window.BlaiseVR = { S, models, loadModel, summon, setExplode, select, startQuiz, addModel, fromText, settings, cloud, tracker };

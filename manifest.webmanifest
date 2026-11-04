@@ -1,0 +1,10 @@
+{
+  "name": "BlaiseVR",
+  "short_name": "BlaiseVR",
+  "description": "Gesture-controlled 3D particle models — take anything apart with your hands.",
+  "start_url": "./",
+  "display": "fullscreen",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [{ "src": "assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

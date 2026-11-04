@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>BlaiseVR — take anything apart with your hands</title>
+  <meta name="description" content="BlaiseVR: gesture-controlled 3D models made of glowing particles. Explode engines, hearts, cells and planets with your bare hands — free, in your browser, video never leaves your device." />
+  <meta name="theme-color" content="#000000" />
+  <meta property="og:title" content="BlaiseVR" />
+  <meta property="og:description" content="Snap to summon. Open your hand to explode. Point to learn. A free gesture-controlled particle lab in your browser." />
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="stage"></div>
+  <div id="labels"></div>
+  <div id="cursor" hidden><span></span></div>
+  <div id="flash"></div>
+
+  <!-- top HUD -->
+  <header class="hud">
+    <div class="brand"><span class="logo">◆</span>Blaise<b>VR</b></div>
+    <div class="title">
+      <h1 id="modelName">—</h1>
+      <p id="modelMeta"></p>
+    </div>
+    <div class="chips">
+      <span class="chip"><i>scene</i><em id="sceneState">dissolved</em></span>
+      <span class="chip"><i>hand</i><em id="handState">off</em></span>
+      <span class="chip"><i>gesture</i><em id="gestureName">—</em></span>
+    </div>
+  </header>
+
+  <!-- right toolbar -->
+  <nav class="tools" aria-label="Controls">
+    <button data-act="snap" title="Snap — summon / dissolve (Space)">🫰<span>Snap</span></button>
+    <button data-act="form" title="Form the model (F)">✊<span>Form</span></button>
+    <button data-act="explodeBtn" title="Explode / assemble (E)">💥<span>Explode</span></button>
+    <button data-act="prev" title="Previous model (←)">◀<span>Prev</span></button>
+    <button data-act="next" title="Next model (V / →)">▶<span>Next</span></button>
+    <button data-act="cut" title="Cut-away slice (X)">✂️<span>Cut</span></button>
+    <button data-act="anim" class="on" title="Animate moving parts (A)">⚙️<span>Animate</span></button>
+    <button data-act="labels" title="Labels (L)">🏷️<span>Labels</span></button>
+    <button data-act="solid" title="Solid view (S)">◼<span>Solid</span></button>
+    <button data-act="colors" title="Colour mode">🎨<span>Colour</span></button>
+    <button data-act="quiz" title="Quiz (Q)">❓<span>Quiz</span></button>
+    <button data-act="voice" title="Voice commands (M)">🎙️<span>Voice</span></button>
+    <button data-act="record" title="Record video (K)">⏺<span>Record</span></button>
+    <button data-act="camera" title="Camera / hand tracking (C)">📷<span>Camera</span></button>
+    <button data-act="settings" title="Settings">⚙<span>Settings</span></button>
+    <button data-act="help" title="Help (H)">?<span>Help</span></button>
+  </nav>
+
+  <!-- explode slider + cut bar -->
+  <div class="sliders">
+    <label class="slider"><span>Explode</span><input id="explode" type="range" min="0" max="1" step="0.01" value="0" /></label>
+    <div id="cutBar" class="slider" hidden><span>Slice</span><input id="cutSlider" type="range" min="-2.4" max="2.4" step="0.01" value="0" /><button id="cutAxisBtn" title="Change slice direction ( , . )">↻ axis</button></div>
+  </div>
+
+  <!-- part info panel -->
+  <aside id="info" class="panel" hidden>
+    <div class="info-head"><i id="infoDot"></i><div><h2 id="infoName"></h2><small id="infoModel"></small></div><button class="x" data-act="closeInfo" aria-label="Close">✕</button></div>
+    <p id="infoDesc"></p>
+    <p id="infoFact" class="fact"></p>
+    <div class="row">
+      <button data-act="speak">🔊 Explain</button>
+      <button id="btnPull" data-act="pull">↗ Pull out</button>
+      <button id="btnIsolate" data-act="isolate">◎ Isolate</button>
+    </div>
+  </aside>
+
+  <!-- model picker -->
+  <section id="picker">
+    <button class="pick-toggle" data-act="browse" title="Browse models (B)">▲ Models</button>
+    <div class="pick-body">
+      <div id="pickerList"></div>
+      <div class="pick-extra">
+        <button data-act="text">🔤 Type words → particles</button>
+        <button data-act="import">📦 Import .glb / .obj / .stl / .json / image</button>
+        <button data-act="demo">▶ Demo</button>
+        <button data-act="shot">📸 Screenshot</button>
+        <button data-act="share">🔗 Share</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- camera preview -->
+  <div id="cam" hidden>
+    <div class="cam-view"><video id="camVideo" playsinline muted></video><canvas id="camOverlay"></canvas></div>
+    <div class="cam-info">
+      <div class="cam-row"><span id="camStatus">Camera</span></div>
+      <div class="cam-row"><span>Hand openness</span><b id="openPct">0%</b></div>
+      <div class="bar"><i id="openBar"></i></div>
+      <label class="cam-row">Sensitivity
+        <select id="camSens"><option value="strict">Strict</option><option value="standard">Standard</option><option value="forgiving">More forgiving</option></select>
+      </label>
+    </div>
+  </div>
+
+  <!-- quiz -->
+  <div id="quiz" class="panel quiz" hidden>
+    <div class="info-head"><div><small id="quizProgress"></small><h2>Quiz</h2></div><button class="x" data-act="quizClose" aria-label="Close">✕</button></div>
+    <p id="quizQ"></p>
+    <div id="quizOpts"></div>
+  </div>
+  <div id="findBanner" hidden><b id="findText"></b><small id="findHint"></small><button data-act="quizClose">End quiz</button></div>
+
+  <!-- welcome -->
+  <div id="welcome" class="overlay">
+    <div class="welcome">
+      <div class="brand big"><span class="logo">◆</span>Blaise<b>VR</b></div>
+      <p class="lede">Engines, hearts, cells, planets and Lagos landmarks made of a quarter-million particles of light — <strong>controlled by your hands</strong>.</p>
+      <div class="cards">
+        <div><span>🫰</span><b>Snap to summon</b><small>Snap your fingers and the particles appear. Make a fist to form the model.</small></div>
+        <div><span>✋</span><b>Open to explode</b><small>The wider you open your hand, the further every part flies apart.</small></div>
+        <div><span>☝️</span><b>Point to learn</b><small>Point at a part to select it. Pinch 🤏 to pull it out. Thumbs-up 👍 to hear it explained.</small></div>
+        <div><span>✌️</span><b>Twist, tilt, zoom</b><small>Twist your hand to rotate, raise it to tilt, two hands 🙌 to zoom. Peace sign for the next model.</small></div>
+      </div>
+      <div class="cta">
+        <button id="startCam" class="primary">📷 Start with camera</button>
+        <button id="startNoCam">Continue without camera</button>
+      </div>
+      <p class="fine">Hand tracking runs on this device. Video never leaves your computer. Also works with mouse, touch, keyboard and voice. Drop any <code>.glb</code>, <code>.obj</code>, <code>.stl</code>, image or <code>.json</code> to make your own.</p>
+    </div>
+  </div>
+
+  <!-- help -->
+  <div id="help" class="overlay dlg" hidden>
+    <div class="dialog wide">
+      <div class="info-head"><h2>Controls</h2><button class="x" data-act="closeDlg" aria-label="Close">✕</button></div>
+      <div class="help-grid">
+        <div>
+          <h3>Gestures</h3>
+          <table>
+            <tr><td>🫰 Snap</td><td>Summon / dissolve</td></tr>
+            <tr><td>✊ Fist</td><td>Form the model</td></tr>
+            <tr><td>✋ Open hand</td><td>Explode (openness = distance)</td></tr>
+            <tr><td>☝️ Point &amp; hold</td><td>Select a part</td></tr>
+            <tr><td>🤏 Pinch</td><td>Pull part out / put back</td></tr>
+            <tr><td>👍 Thumbs up</td><td>Explain selected part aloud</td></tr>
+            <tr><td>✌️ Peace</td><td>Next model</td></tr>
+            <tr><td>🔄 Twist hand</td><td>Rotate · raise / lower to tilt</td></tr>
+            <tr><td>🙌 Two hands</td><td>Zoom</td></tr>
+          </table>
+          <h3>Mouse &amp; touch</h3>
+          <table>
+            <tr><td>Drag</td><td>Rotate</td></tr>
+            <tr><td>Scroll</td><td>Explode</td></tr>
+            <tr><td>Ctrl/⇧ + scroll, pinch</td><td>Zoom</td></tr>
+            <tr><td>Click / tap</td><td>Select part</td></tr>
+            <tr><td>Double-click</td><td>Pull part out</td></tr>
+          </table>
+        </div>
+        <div>
+          <h3>Keyboard</h3>
+          <table class="keys">
+            <tr><td><kbd>Space</kbd></td><td>Snap — summon / dissolve</td></tr>
+            <tr><td><kbd>F</kbd> <kbd>O</kbd> <kbd>E</kbd></td><td>Form · explode toggle</td></tr>
+            <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>Explode more / less</td></tr>
+            <tr><td><kbd>V</kbd> <kbd>→</kbd> <kbd>←</kbd> <kbd>1-9</kbd></td><td>Next / previous / jump to model</td></tr>
+            <tr><td><kbd>B</kbd></td><td>Browse models</td></tr>
+            <tr><td><kbd>X</kbd> <kbd>,</kbd> <kbd>.</kbd></td><td>Cut-away slice · change axis</td></tr>
+            <tr><td><kbd>Z</kbd></td><td>Isolate selected part</td></tr>
+            <tr><td><kbd>A</kbd> <kbd>R</kbd> <kbd>G</kbd></td><td>Animate · auto-rotate · hand rotate</td></tr>
+            <tr><td><kbd>L</kbd> <kbd>T</kbd> <kbd>S</kbd></td><td>Labels · trails · solid view</td></tr>
+            <tr><td><kbd>Q</kbd> <kbd>M</kbd> <kbd>I</kbd></td><td>Quiz · voice commands · explain part</td></tr>
+            <tr><td><kbd>K</kbd> <kbd>P</kbd></td><td>Record video · screenshot</td></tr>
+            <tr><td><kbd>N</kbd> <kbd>U</kbd></td><td>Type text · import a file</td></tr>
+            <tr><td><kbd>C</kbd> <kbd>D</kbd> <kbd>H</kbd></td><td>Camera · demo · help</td></tr>
+            <tr><td><kbd>+</kbd> <kbd>-</kbd> <kbd>0</kbd></td><td>Zoom · reset view</td></tr>
+          </table>
+          <h3>Voice (Chrome / Edge)</h3>
+          <p class="muted">“explode”, “assemble”, “next”, “show the engine”, “what is the crankshaft”, “pull out the aorta”, “quiz”, “slice”, “zoom in”.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- settings -->
+  <div id="settings" class="overlay dlg" hidden>
+    <div class="dialog">
+      <div class="info-head"><h2>Settings</h2><button class="x" data-act="closeDlg" aria-label="Close">✕</button></div>
+      <label class="set">Particles
+        <select id="setParticles"><option value="40000">40k — old phones</option><option value="70000">70k — phones</option><option value="120000">120k</option><option value="150000">150k — laptops</option><option value="250000">250k — gaming PCs</option></select>
+      </label>
+      <label class="set">Colour mode
+        <select id="setColor"><option value="parts">By part</option><option value="rainbow">Rainbow</option><option value="heat">Heat (height)</option><option value="ice">Ice</option><option value="gold">Gold</option></select>
+      </label>
+      <label class="set">Gesture sensitivity
+        <select id="setSens"><option value="strict">Strict</option><option value="standard">Standard</option><option value="forgiving">More forgiving</option></select>
+      </label>
+      <label class="set">Animation speed <input id="setAnimSpeed" type="range" min="0.1" max="3" step="0.1" /></label>
+      <label class="set chk"><input id="setBloom" type="checkbox" /> Bloom glow</label>
+      <label class="set chk"><input id="setTrails" type="checkbox" /> Motion trails</label>
+      <label class="set chk"><input id="setAuto" type="checkbox" /> Auto-rotate</label>
+      <label class="set chk"><input id="setHandRot" type="checkbox" /> Rotate with hand twist</label>
+      <button id="setReset" class="danger">Reset settings &amp; remove imported models</button>
+    </div>
+  </div>
+
+  <!-- text to particles -->
+  <div id="textDlg" class="overlay dlg" hidden>
+    <div class="dialog">
+      <div class="info-head"><h2>Words → particles</h2><button class="x" data-act="closeDlg" aria-label="Close">✕</button></div>
+      <p class="muted">Type a name, a message or a birthday wish. Each letter becomes a part you can explode and pull out. Shift+Enter for a new line.</p>
+      <textarea id="textIn" rows="2" maxlength="40" placeholder="HAPPY BIRTHDAY"></textarea>
+      <button id="textGo" class="primary">✨ Build it</button>
+    </div>
+  </div>
+
+  <div id="drop" hidden><div>Drop to import<small>.glb · .gltf · .obj · .stl · .json · .png · .jpg</small></div></div>
+  <input id="file" type="file" accept=".json,.glb,.gltf,.obj,.stl,image/*" multiple hidden />
+  <div id="toasts"></div>
+  <noscript><p style="color:#fff;padding:2rem">BlaiseVR needs JavaScript and WebGL.</p></noscript>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

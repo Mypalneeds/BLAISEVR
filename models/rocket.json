@@ -1,0 +1,25 @@
+{
+  "name": "Space Rocket",
+  "emoji": "🚀",
+  "category": "Space",
+  "about": "A simple two-stage rocket. Drop this file on BlaiseVR (or use Import) to load it — then copy it to make your own models.",
+  "parts": [
+    { "name": "Nose Cone", "color": "#ff4fd8", "shapes": [{ "t": "cyl", "c": [0, 2.3, 0], "r": 0.45, "r2": 0, "h": 1.0 }],
+      "desc": "The pointed tip that cuts through the air and holds the payload, like a satellite.", "fact": "Its shape reduces drag as the rocket breaks the sound barrier." },
+    { "name": "Upper Stage", "color": "#e9f0ff", "shapes": [{ "t": "cyl", "c": [0, 1.2, 0], "r": 0.45, "h": 1.2 }],
+      "desc": "The second stage, with its own engine, that carries the payload the final distance into orbit." },
+    { "name": "Booster", "color": "#00e5ff", "shapes": [{ "t": "cyl", "c": [0, -0.6, 0], "r": 0.5, "h": 2.4 }],
+      "desc": "The first stage. It holds most of the fuel and does the heavy lifting off the launch pad." },
+    { "name": "Fins", "color": "#ffd23f", "shapes": [
+        { "t": "box", "c": [0.7, -1.6, 0], "s": [0.5, 0.7, 0.04] },
+        { "t": "box", "c": [-0.7, -1.6, 0], "s": [0.5, 0.7, 0.04] },
+        { "t": "box", "c": [0, -1.6, 0.7], "s": [0.04, 0.7, 0.5] },
+        { "t": "box", "c": [0, -1.6, -0.7], "s": [0.04, 0.7, 0.5] }],
+      "desc": "Stabilise the rocket so it flies straight, like the feathers on an arrow." },
+    { "name": "Engine Nozzle", "color": "#ff7a3d", "shapes": [{ "t": "cyl", "c": [0, -2.1, 0], "r": 0.22, "r2": 0.4, "h": 0.5, "rot": [180, 0, 0], "open": true }],
+      "desc": "Shapes the hot exhaust into a fast jet. Pushing gas down pushes the rocket up — Newton's third law." },
+    { "name": "Exhaust Flame", "color": "#ffae00", "d": 0.5, "shapes": [{ "t": "cyl", "c": [0, -2.9, 0], "r": 0.38, "r2": 0.02, "h": 1.2, "rot": [180, 0, 0], "v": true }],
+      "anim": { "type": "pulse", "amp": 0.12, "freq": 4 },
+      "desc": "Burning fuel and oxidiser leaving the engine at thousands of metres per second." }
+  ]
+}
